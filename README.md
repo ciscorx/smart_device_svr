@@ -2,7 +2,7 @@
 controls network devices using cron
 
 ## Commentary
-     This server script schedules the switching on or off smart
+     This server script schedules the switching on or off of smart
        devices, such as, for example, the wifi of an at&t u-verse
        router connected to the local area network, depending on tcp
        messages received over port 29998 consisting of commands issued
