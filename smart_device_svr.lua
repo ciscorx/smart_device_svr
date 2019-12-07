@@ -61,15 +61,15 @@
           LuaJIT-2.0.5 is from http://luajit.org/download.html
 
      Authors/Maintainers: ciscorx@gmail.com
-       Version: 0.1
-       Commit date: 2019-12-06
+       Version: 0.2
+       Commit date: 2019-12-07
 
-       7z-revisions.el_rev=876.0
-       7z-revisions.el_sha1-of-last-revision=e51adc61152aed1ba23f824684d11d1a1bca4383
+       7z-revisions.el_rev=901.0
+       7z-revisions.el_sha1-of-last-revision=8214cda62c3852f9e7fd8cfa0a134ddaabf81886
 --]]
 
 local devices_list = {"wifi"}
-local dispositions_cmdline = {{"screen -dm emacs -nw -Q -l disable_wifi.el","screen -dm emacs -nw -Q -l enable_wifi.el"}}
+local dispositions_cmdline = {{"screen -dm emacs -nw -Q -l /home/pi/scripts/disable_wifi.el","screen -dm emacs -nw -Q -l /home/pi/scripts/enable_wifi.el"}}
 local disposition_states = {{"off","on"}}
 local devices_for_which_to_execute_last_cron_statement_on_boot = {"wifi"}
 
@@ -98,7 +98,7 @@ int printf(const char *fmt, ...);
 ]]
 
 
-local cron = ffi.load("./ccronexpr.so")
+local ccronexpr = ffi.load("./ccronexpr.so")
 local errormsg_file = "/tmp/.errormsg.txt"
 local smart_device_client_cmd = "send_to_smart_device_svr.lua"
 local port_number_for_which_to_listen = 29998
@@ -864,7 +864,7 @@ local function parse(raw_expr)
     -- https://github.com/tarantool/cron-parser/blob/master/cron-parser.lua
     local parsed_expr = ffi.new("cron_expr[1]")
     local err = ffi.new("const char*[1]")
-    cron.cron_parse_expr(raw_expr, parsed_expr, err)
+    ccronexpr.cron_parse_expr(raw_expr, parsed_expr, err)
     if err[0] ~= ffi.NULL then
         return nil, ffi.string(err[0])
     end
@@ -910,7 +910,7 @@ local function next(lua_parsed_expr)
     for i = 0,1 do
         parsed_expr[0].months[i] = lua_parsed_expr.months[i + 1]
     end
-    local ts = cron.cron_next(parsed_expr, os.time())
+    local ts = ccronexpr.cron_next(parsed_expr, os.time())
     return tonumber(ts)
 end
 
@@ -931,7 +931,7 @@ local function prev(lua_parsed_expr)
     for i = 0,1 do
         parsed_expr[0].months[i] = lua_parsed_expr.months[i + 1]
     end
-    local ts = cron.cron_prev(parsed_expr, os.time())
+    local ts = ccronexpr.cron_prev(parsed_expr, os.time())
     return tonumber(ts)
 end
 
@@ -1404,17 +1404,19 @@ local function get_cron_jobs()
       if not v:match("^#") and v ~= '' then
 
 	 field1, field2, field3, field4, field5, field6 = v:match("^%s*(%S+)%s+(%S+)%s+(%S+)%s+(%S+)%s+(%S+)%s+(.*)$")
-	 -- note: field 1 is actually minutes, not seconds, so we must add a seconds field so ccronexpr.c doesnt crash
+	 -- note: when calling the ccronexpr function, field 1 must be seconds not minutes, so we must add a seconds field so ccronexpr.c doesnt crash
+
 	 if field6 then  
+	    pp("field6 = "..field6)
 	    table.insert( cron.cronjobs,v)
 
 	    table.insert( cron.cronjob_line_numbers, line_num)
-	    table.insert( cron.cronjob_schedules, "0 "..field1.." "..field2.." "..field3.." "..field4.." "..field5)
+	    table.insert( cron.cronjob_schedules, field1.." "..field2.." "..field3.." "..field4.." "..field5)
 	    if field6:sub(-#tmp_token,-1) == tmp_token then
 	       table.insert( cron.cronjob_dispositions, field6:sub(1,-#tmp_token-1))
 	       table.insert( cron.cronjob_md5sumhexa, md5.sumhexa(v:sub(1,-#tmp_token-1)))
 	       table.insert(cron.tmp_dispositions, field6:sub(1,-#tmp_token-1))
-	       table.insert(cron.tmp_schedules, "0 "..field1.." "..field2.." "..field3.." "..field4.." "..field5)
+	       table.insert(cron.tmp_schedules, field1.." "..field2.." "..field3.." "..field4.." "..field5)
 	       table.insert(cron.tmp_line_numbers, line_num)
 
 	    else
@@ -1422,16 +1424,20 @@ local function get_cron_jobs()
 	       table.insert( cron.cronjob_md5sumhexa, md5.sumhexa(v))
 	    end
 	 end
-      else
+      else  -- cron statements that begin with a comment
 	 onhold_key, onhold_key2, field1, field2, field3, field4, field5, field6 = v:match(onhold_token.."%s*(%S+)%s+(%S+)%s+(%S+)%s+(%S+)%s+(%S+)%s+(.*)$")
-	 -- note: field 1 is actually minutes, not seconds, so we must add a seconds field so ccronexpr.c doesnt crash
+	 if onhold_key then pp("onhold_key="..onhold_key) end
+	 if onhold_key2 then pp("onhold_key2="..onhold_key2) end
+	 if field1 then pp("onhold field1="..field1) end
+	 if field6 then pp("onhold field6="..field6) end
+	 -- note: field 1 is actually minutes, not seconds, so we must add a seconds field before calling parse() so ccronexpr.c doesnt crash
 	 if field6 then
 	    local onhold_token_begin, onhold_token_end = v:find(onhold_token)
 	    
 	    table.insert( cron.onholdjobs,v)
 	    cron.onholdjob_key[onhold_key]=#cron.onholdjobs
 	    table.insert( cron.onholdjob_line_numbers, line_num)
-	    table.insert( cron.onholdjob_schedules, "0 "..field1.." "..field2.." "..field3.." "..field4.." "..field5)
+	    table.insert( cron.onholdjob_schedules, field1.." "..field2.." "..field3.." "..field4.." "..field5)
 	    if field6:sub(-#tmp_token,-1) == tmp_token then  -- #ON HOLD#  and #TMP
 	       local md5sum = md5.sumhexa(v:sub(onhold_token_end+1,-#tmp_token-1))
 	       table.insert( cron.onholdjob_dispositions, field6:sub(1,-#tmp_token-1))
@@ -1439,7 +1445,7 @@ local function get_cron_jobs()
 	       table.insert( cron.cronjob_md5sumhexa, md5sum )
 
 	       table.insert(cron.tmp_dispositions, field6:sub(1,-#tmp_token-1))
-	       table.insert(cron.tmp_schedules, "0 "..field1.." "..field2.." "..field3.." "..field4.." "..field5)
+	       table.insert(cron.tmp_schedules, field1.." "..field2.." "..field3.." "..field4.." "..field5)
 	       table.insert( cron.tmp_md5sumhexa, md5sum )
 	       table.insert(cron.tmp_line_numbers, line_num)
 	       
@@ -1461,7 +1467,7 @@ local function get_cron_jobs()
    cron.cronjob_md5sumhexa_to_jobnum = make_reverse_lookup_table(cron.cronjob_md5sumhexa)
    cron.onholdjob_md5sumhexa_reverselookup = make_reverse_lookup_table(cron.onholdjob_md5sumhexa)
    return cron
-end
+end  -- get_cron_jobs() ends here --
 
 
 local function tblDeleteLines(t,d)
@@ -1608,20 +1614,20 @@ local function clear_schedule_for(md5sums_begin,md5sum_end)
    local disposition_action_begin = dispositions_to_action[disposition_begin]
    local device_begin = dispositions_to_device[disposition_begin]
 
-   local parsed_schedule_begin = parse(cj.cronjob_schedules[jobnum])
+   local parsed_schedule_begin = parse("0 "..cj.cronjob_schedules[jobnum])
    local jobnum = cj.cronjob_md5sumhexa_to_jobnum[md5sum_end]
    local disposition_end = dispositions_to_device[cj.cronjob_dispositions[jobnum]]
    local disposition_end = cj.cronjob_dispositions[jobnum]
    local disposition_action_end = dispositions_to_action[disposition_end]
    local device_end = dispositions_to_device[disposition_end]
 
-   local parsed_schedule_end = parse(cj.cronjob_schedules[jobnum])
+   local parsed_schedule_end = parse("0 "..cj.cronjob_schedules[jobnum])
    local clear_begin = next(parsed_schedule_begin)
    local clear_end = next(parsed_schedule_end)
    local held = {}
    for k,v in ipairs(cj.cronjob_dispositions) do
       if v == disposition_end then
-	 local parsed_possible_conflict = parse(cj.cronjob_schedule[k])
+	 local parsed_possible_conflict = parse("0 "..cj.cronjob_schedule[k])
 	 local possible_conflict_begin = next(parsed_possible_conflict)
 	 if possible_conflict_begin >= clear_begin and possible_conflict_begin <= clear_end then
 	    hold_job(cj,k,md5sum_begin.." "..md5sum_end)
@@ -1792,21 +1798,27 @@ local function execute_last_cron_statement_regarding_device( devices_to_execute 
       local cron_in_the_running_list_times = {}
       local devicenum = device_in_question_to_device_number[device]
       pp(ins(cj))
-      pp(dispositions_cmdline[1][1])  -- 1 is off and 2 is on
+--      pp(dispositions_cmdline[1][1])  -- 1 is off and 2 is on
       for k,v in ipairs( cj.cronjob_dispositions ) do
+	 -- pp(v.." == "..dispositions_cmdline[devicenum][1].." or "..dispositions_cmdline[devicenum][2].." ?")
+	 
 	 if v == dispositions_cmdline[devicenum][1] or v == dispositions_cmdline[devicenum][2] then
 	    table.insert(cron_in_the_running_list,k)
-	    local a = parse(cj.cronjob_schedules[k])
+	    local a = parse("0 "..cj.cronjob_schedules[k])
+	    pp("parsing: 0 "..cj.cronjob_schedules[k])
 	    
 	    pp(cj.cronjob_schedules[k])
 	    local c = prev(a)
+	    pp(v.." = "..c)
 	    table.insert(cron_in_the_running_list_times,c)
 	 end
       end
+      pp("cron_in_the_running_list_times:")
+      pp(ins(cron_in_the_running_list_times))
       local k,v = maxArrayValueAndItsKey(cron_in_the_running_list_times, function(a,b) return a < b end)
-      pp("now evoking the `on boot we must execute' directive:")
+      pp("not evoking the `on boot we must execute' directive:")
       pp(cj.cronjob_dispositions[cron_in_the_running_list[k]]) 
-      os.execute(cj.cronjob_dispositions[cron_in_the_running_list[k]])
+--debug      os.execute(cj.cronjob_dispositions[cron_in_the_running_list[k]])
    end -- for each device ends here --
 end
 
@@ -1828,7 +1840,7 @@ local function tbl_to_schedule_string (tbl)
    if not dow then 
       dow = "*"
    end
-   schedule_string = "0 "..tbl.min.." "..tbl.hour.." "..tbl.day.." "..tbl.month.." "..dow.." "
+   schedule_string = tbl.min.." "..tbl.hour.." "..tbl.day.." "..tbl.month.." "..dow.." "
 
    -- if tbl.min then 
    --    schedule_string = schedule_string.." "..tbl.min
