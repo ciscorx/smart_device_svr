@@ -28,21 +28,24 @@ controls network devices using cron
 
 
 ## Compiling notes:
-          Compiling can be accomplished by the command make all, executed from the root directory of the unzipped archive.
+          Compiling of ccronexpr.so may be accomplished by using the command `make all', executed from the root directory of the unzipped archive.
 
-          ccronexpr.so is compiled using the following statement:
+          ccronexpr.so is ordinarily compiled using the following statement:
              gcc -o ccronexpr.so ccronexpr.c -shared -fPIC -DCRON_USE_LOCAL_TIME
           
           luajit and luasocket must be compiled, in their respective directories, with:
              make && make install 
 
+          luasocket must have in its src directory a copy of lua.h luaconf.h and luaxlib.h pertaining to lua-5.1, which have already been provided.
+
+
 ## Scheduling:
           This is the crontab I've been using ( set with crontab -e, notice that there are no seconds fields ):
 
-            59 21 * * sun,mon,tue,wed,thu screen -dm emacs -nw -Q -l /home/pi/scripts/disable_wifi.el<br/>
-            0 15 * * mon,tue,wed,thu,fri screen -dm emacs -nw -Q -l /home/pi/scripts/enable_wifi.el<br/>
-            59 23 * * fri,sat screen -dm emacs -nw -Q -l /home/pi/scripts/disable_wifi.el<br/>
-            0 7 * * sat,sun screen -dm emacs -nw -Q -l /home/pi/scripts/enable_wifi.el<br/>
+            59 21 * * sun,mon,tue,wed,thu screen -dm emacs -nw -Q -l /home/pi/scripts/disable_wifi.el
+            0 15 * * mon,tue,wed,thu,fri screen -dm emacs -nw -Q -l /home/pi/scripts/enable_wifi.el
+            59 23 * * fri,sat screen -dm emacs -nw -Q -l /home/pi/scripts/disable_wifi.el
+            0 7 * * sat,sun screen -dm emacs -nw -Q -l /home/pi/scripts/enable_wifi.el
    
 ## References:  
           ccronexpr.c is from https://github.com/staticlibs/ccronexpr

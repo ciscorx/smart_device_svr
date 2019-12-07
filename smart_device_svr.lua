@@ -27,13 +27,15 @@
 
 
      Compiling notes:
-          Compiling can be accomplished by the command make all, executed from the root directory of the unzipped archive.
+          Compiling of ccronexpr.so may be accomplished by using the command `make all', executed from the root directory of the unzipped archive.
 
-          ccronexpr.so is compiled using the following statement:
+          ccronexpr.so is ordinarily compiled using the following statement:
              gcc -o ccronexpr.so ccronexpr.c -shared -fPIC -DCRON_USE_LOCAL_TIME
           
           luajit and luasocket must be compiled, in their respective directories, with:
              make && make install 
+
+          luasocket must have in its src directory a copy of lua.h luaconf.h and luaxlib.h pertaining to lua-5.1, which have already been provided.
 
      Scheduling:
           # This is an example crontab I've been using ( set with crontab -e, notice that there are no seconds fields ):
@@ -59,11 +61,11 @@
           LuaJIT-2.0.5 is from http://luajit.org/download.html
 
      Authors/Maintainers: ciscorx@gmail.com
-       Version: 0.0
-       Commit date: 2019-10-26
+       Version: 0.1
+       Commit date: 2019-12-06
 
-       7z-revisions.el_rev=0.0
-       7z-revisions.el_sha1-of-last-revision=b628fbc14d65851699cf40874badfb2f6cb953ec
+       7z-revisions.el_rev=876.0
+       7z-revisions.el_sha1-of-last-revision=e51adc61152aed1ba23f824684d11d1a1bca4383
 --]]
 
 local devices_list = {"wifi"}
@@ -199,11 +201,6 @@ add_space_to_beginning_and_ending_of_each_list_item_for_each_array(
    duration_keywords, date_range_ends_keywords, 
    date_range_delimiting_keywords)
 pp(keywords_array)
--- add_space_to_beginning_and_ending_of_each_list_item(keywords_array)
--- add_space_to_beginning_and_ending_of_each_list_item(date_in_question_keywords)
--- add_space_to_beginning_and_ending_of_each_list_item(date_in_question_by_duration_keywords)
--- add_space_to_beginning_and_ending_of_each_list_item(duration_keywords)
--- add_space_to_beginning_and_ending_of_each_list_item(date_range_ends_keywords)
 local is_range_ends_keyword = Set(date_range_ends_keywords)
 
 local randomcharset = {}  do -- [0-9a-zA-Z]
@@ -556,6 +553,17 @@ local function date_of_next_dow(dow, occurrence)
       occurrence = occurrence - 1
    end
    return datetbl
+end
+
+
+-- takes out the phrase `for the next' and replaces it with `for'
+local function replace_for_the_next_clause(str)
+   local startpos,endpos = str:find(" for%s+the%s+next ")
+   if startpos then
+      return str:sub(1,startpos + 4)..str:sub(endpos+1,-1)
+   else
+      return str
+   end
 end
 
 local function extract_dow_recurring(str)
@@ -1523,15 +1531,15 @@ local function submit_crontab(array)
       pp("now writing crontab")
       pp(array) --debug
       local tmpfilename = randomString(10)
-local fileh = io.open("/tmp/"..tmpfilename,"w")
+      local fileh = assert(io.open("/tmp/"..tmpfilename,"w"))
 --debug            local fileh = io.open("/tmp/crontable","w") --debug
       for _,v in ipairs(array) do
 	 fileh:write(v)
 	 fileh:write("\n")
       end
       fileh:close()
-      os.execute("cat /tmp/"..tmpfilename.." | crontab -")
-      os.remove("/tmp/"..tmpfilename)
+      assert(os.execute("cat /tmp/"..tmpfilename.." | crontab -"))
+--      os.remove("/tmp/"..tmpfilename)
    end
 end
 
@@ -1796,17 +1804,18 @@ local function execute_last_cron_statement_regarding_device( devices_to_execute 
 	 end
       end
       local k,v = maxArrayValueAndItsKey(cron_in_the_running_list_times, function(a,b) return a < b end)
-      pp("on boot we must execute the following:")
-      pp(cj.cronjob_dispositions[cron_in_the_running_list[k]])  
-   end
+      pp("now evoking the `on boot we must execute' directive:")
+      pp(cj.cronjob_dispositions[cron_in_the_running_list[k]]) 
+      os.execute(cj.cronjob_dispositions[cron_in_the_running_list[k]])
+   end -- for each device ends here --
 end
 
 local function tbl_to_schedule_string (tbl)
    if not tbl.hour then
-      tbl.hour = "*"
+      tbl.hour = 0
    end
    if not tbl.min then
-      tbl.min = "*"
+      tbl.min = 0
    end
    if not tbl.day then
       tbl.day = "*"
@@ -1817,7 +1826,7 @@ local function tbl_to_schedule_string (tbl)
 
    local dow = tbl.dow_recurring_written_out
    if not dow then 
-      dow = "?"
+      dow = "*"
    end
    schedule_string = "0 "..tbl.min.." "..tbl.hour.." "..tbl.day.." "..tbl.month.." "..dow.." "
 
@@ -1864,6 +1873,7 @@ local function add_new_schedule(tbl_begin, disposition_begin, tbl_end, dispositi
       pp("also adding new cronline: "..new_cronline)
       pp("also adding yet another croline: "..new_cronline_begin_md5.." "..new_cronline_end_md5)
    end
+   submit_crontab(cj.cron_all)
    
 end
 
@@ -1898,10 +1908,7 @@ while 1 do
 
    if not err then
       pp("################################################################################")
-      if line == "turn off wifi" or line == "turn wifi off" or line == "disable wifi" then
-	 --	os.execute(dispositions_cmdline["wifi"]["off"])
-	 pp("turn off wifi")
-      elseif line:sub(1,4) == "list" then
+      if line:sub(1,4) == "list" then
 	 tmphandle = io.popen("crontab -l 2>" .. errormsg_file)
 	 result = tmphandle:read("*a")
 	 tmphandle:close()
@@ -2031,6 +2038,7 @@ while 1 do
 	    if new_line and new_line ~= "" then
 	       line = new_line
 	    end
+	    line = replace_for_the_next_clause(line)
 	    line = line:gsub("/","-")
 	    
 	    pp("line after removal: "..line)
@@ -2105,9 +2113,13 @@ while 1 do
 	    date_in_question_tbl.dow_recurring_written_out = dow_recurring_string
 	    pp("date_in_question_tbl")
 	    pp(date_in_question_tbl)
-	    if date_in_question_tbl.now then
-	       pp("now flag invoked: turning wifi "..disposition_state_num) --debug
-	       --	    os.execute(dispositions_cmdline[device_number][disposition_state_num])
+	    do
+	       local now_is = os.date("*t")	       
+	       if date_in_question_tbl.min == now_is.min and date_in_question_tbl.hour == now_is.hour and date_in_question_tbl.day == now_is.day and date_in_question_tbl.month == now_is.month then
+		  pp("now invoking: turning wifi "..disposition_state_num) --debug
+		  pp("os.execute("..dispositions_cmdline[device_number][disposition_state_num]..")")
+		  os.execute(dispositions_cmdline[device_number][disposition_state_num])
+	       end
 	    end
 	    
 	    for _, keyword in ipairs(date_range_ends_keywords) do
@@ -2160,8 +2172,6 @@ while 1 do
 	    pp("dispositions_state_num")
 	    pp(dispositions_state_num)
 	    add_new_schedule(date_in_question_tbl,dispositions_cmdline[device_number][disposition_state_num], date_range_ends_tbl, dispositions_cmdline[device_number][disposition_state_num % 2 + 1])
-	    --	 if two_part_cmd then
-	    --	 end
 	 end -- else no action ends here --
       end  -- else variant command ends here --
    end  -- else not err ends here --
@@ -2171,4 +2181,3 @@ while 1 do
 end -- while ends here --
 
 
--- line:find(date_in_question_by_duration_keywords[1]) then
