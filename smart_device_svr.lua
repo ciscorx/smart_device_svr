@@ -29,9 +29,11 @@
      Compiling notes:
           Compiling of ccronexpr.so may be accomplished by using the command `make all', executed from the root directory of the unzipped archive.
 
-          ccronexpr.so is ordinarily compiled using the following statement:
+          ccronexpr.so is compiled using the following statement:
              gcc -o ccronexpr.so ccronexpr.c -shared -fPIC -DCRON_USE_LOCAL_TIME
-          
+          ccronexpr_misc_utils.so is compiled by the following:
+             gcc -o ccronexpr_misc_utils.so ccronexpr_misc_utils.c -shared -fPIC          
+   
           luajit and luasocket must be compiled, in their respective directories, with:
              make && make install 
 
@@ -52,7 +54,7 @@
           ccronexpr.c is from https://github.com/staticlibs/ccronexpr
 
           The lua wrapper to ccronexpr.c is from
-          https://github.com/tarantool/cron-parser/blob/master/cron-parser.lua
+          https://github.com/tarantool/cron-parser/blob/master/cron-parser.lua with some debugging
 
           table.save-1.0.lua is from http://lua-users.org/wiki/SaveTableToFile
 
@@ -61,11 +63,11 @@
           LuaJIT-2.0.5 is from http://luajit.org/download.html
 
      Authors/Maintainers: ciscorx@gmail.com
-       Version: 0.2
-       Commit date: 2019-12-07
+       Version: 0.3
+       Commit date: 2019-12-17
 
-       7z-revisions.el_rev=901.0
-       7z-revisions.el_sha1-of-last-revision=8214cda62c3852f9e7fd8cfa0a134ddaabf81886
+       7z-revisions.el_rev=939.0
+       7z-revisions.el_sha1-of-last-revision=0d3275508e0799f0246284d596f490a7b7863689
 --]]
 
 local devices_list = {"wifi"}
@@ -95,10 +97,12 @@ void cron_parse_expr(const char* expression, cron_expr* target, const char** err
 time_t cron_next(cron_expr* expr, time_t date);
 time_t cron_prev(cron_expr* expr, time_t date);
 int printf(const char *fmt, ...);
+int print_time( long long ticks);
+int double_long_to_string( char* strbuffer_outarg, long long ticks);
 ]]
 
-
 local ccronexpr = ffi.load("./ccronexpr.so")
+local ccronexpr_misc_utils = ffi.load("./ccronexpr_misc_utils.so")
 local errormsg_file = "/tmp/.errormsg.txt"
 local smart_device_client_cmd = "send_to_smart_device_svr.lua"
 local port_number_for_which_to_listen = 29998
@@ -859,7 +863,49 @@ local function array_to_string(array, separator)
    retval = retval:sub(1,-1 - #separator )
 end
 
-local function parse(raw_expr)
+local function string_add_leading_zeros( str, places)
+   local leading_zeros = ""
+   for i = 1,places do
+      leading_zeros = leading_zeros.."0"
+   end
+   return leading_zeros..str
+end
+
+local function str_is_less_than_p( str1, str2)
+   local str1_len = #str1
+   local str2_len = #str2
+   if str1_len > str2_len then 
+      local str_diff = str2_len - str1_len
+      str2 = string_add_leading_zeros( str_diff,str2)
+   elseif str1_len < str2_len then
+      local str_diff = str1_len - str2_len
+      str1 = string_add_leading_zeros( str_diff,str1)
+   end
+   if str1 < str2 then
+      return true
+   else
+      return false
+   end
+end
+
+local function str_is_greater_than_p( str1, str2)
+   local str1_len = #str1
+   local str2_len = #str2
+   if str1_len > str2_len then 
+      local str_diff = str2_len - str1_len
+      str2 = string_add_leading_zeros( str_diff,str2)
+   elseif str1_len < str2_len then
+      local str_diff = str1_len - str2_len
+      str1 = string_add_leading_zeros( str_diff,str1)
+   end
+   if str1 > str2 then
+      return true
+   else
+      return false
+   end
+end
+
+local function ccparse(raw_expr)
     -- This function acts as a wrapper to ccronexpr.c, taken from
     -- https://github.com/tarantool/cron-parser/blob/master/cron-parser.lua
     local parsed_expr = ffi.new("cron_expr[1]")
@@ -893,7 +939,17 @@ local function parse(raw_expr)
     return lua_parsed_expr
 end
 
-local function next(lua_parsed_expr)
+
+local function int64_t2String( longlong_number)
+   ccronexpr_misc_utils.print_time(longlong_number)
+   local target_string_outarg = ffi.new('char[500]')
+
+   ccronexpr_misc_utils.double_long_to_string( target_string_outarg, longlong_number)
+   pp(target_string_outarg)
+   return target_string_outarg
+end
+
+local function ccnext(lua_parsed_expr)
     -- ccronexpr.c wrapper function
     local parsed_expr = ffi.new('cron_expr[1]')
     for i = 0,7 do
@@ -911,10 +967,12 @@ local function next(lua_parsed_expr)
         parsed_expr[0].months[i] = lua_parsed_expr.months[i + 1]
     end
     local ts = ccronexpr.cron_next(parsed_expr, os.time())
-    return tonumber(ts)
+
+--    return tonumber(ts)
+    return int64_t2String(ts)
 end
 
-local function prev(lua_parsed_expr)
+local function ccprev(lua_parsed_expr)
     -- ccronexpr.c wrapper function
     local parsed_expr = ffi.new('cron_expr[1]')
     for i = 0,7 do
@@ -932,8 +990,14 @@ local function prev(lua_parsed_expr)
         parsed_expr[0].months[i] = lua_parsed_expr.months[i + 1]
     end
     local ts = ccronexpr.cron_prev(parsed_expr, os.time())
-    return tonumber(ts)
+
+--    return tonumber(ts)
+    return int64_t2String(ts)
+
 end
+
+ 
+
 
 
 local function in_future_time_parser(str, starting_tbl)
@@ -949,14 +1013,14 @@ local function in_future_time_parser(str, starting_tbl)
       starting = os.time()
    end 
    local weeks = str:match(" (%d%d?%d?) ?we?e?ks? ")
-   if weeks then weeks = tonumber(weeks) else weeks = 0 end
-   local days = str:match(" (%d%d?%d?) ?d?a?y?s? ")
-   if days then days = tonumber(days) else days = 0 end
+   if weeks then pp(weeks.." weeks"); weeks = tonumber(weeks) else weeks = 0 end
+   local days = str:match(" (%d%d?%d?) ?da?y?s? ")
+   if days then pp(days.."days"); days = tonumber(days) else days = 0 end
    local mins = str:match(" (%d%d?%d?) ?mi?n?u?t?e?s? ")
-   if mins then mins = tonumber(mins) else mins = 0 end
+   if mins then pp(mins.."mins"); mins = tonumber(mins) else mins = 0 end
    local hours = str:match(" (%d%d?%d?%.?%d?%d?) ?ho?u?r?s? ")
-   if hours then hours = tonumber(hours) else hours = 0 end
-   return os.date("*t", weeks * 604800 + days * 86400 + hours * 3600 + mins * 60 + starting )
+   if hours then pp(hours.."hours"); hours = tonumber(hours) else hours = 0 end
+   return os.date("*t", (weeks * 604800) + (days * 86400) + (hours * 3600) + (mins * 60) + starting )
 end
 
 
@@ -1424,13 +1488,16 @@ local function get_cron_jobs()
 	       table.insert( cron.cronjob_md5sumhexa, md5.sumhexa(v))
 	    end
 	 end
+      elseif v == '' then   -- preserve empty lines
+	 table.insert(cron.cron_all,"\n")
+
       else  -- cron statements that begin with a comment
 	 onhold_key, onhold_key2, field1, field2, field3, field4, field5, field6 = v:match(onhold_token.."%s*(%S+)%s+(%S+)%s+(%S+)%s+(%S+)%s+(%S+)%s+(.*)$")
 	 if onhold_key then pp("onhold_key="..onhold_key) end
 	 if onhold_key2 then pp("onhold_key2="..onhold_key2) end
 	 if field1 then pp("onhold field1="..field1) end
 	 if field6 then pp("onhold field6="..field6) end
-	 -- note: field 1 is actually minutes, not seconds, so we must add a seconds field before calling parse() so ccronexpr.c doesnt crash
+	 -- note: field 1 is actually minutes, not seconds, so we must add a seconds field before calling ccparse() so ccronexpr.c doesnt crash
 	 if field6 then
 	    local onhold_token_begin, onhold_token_end = v:find(onhold_token)
 	    
@@ -1614,21 +1681,21 @@ local function clear_schedule_for(md5sums_begin,md5sum_end)
    local disposition_action_begin = dispositions_to_action[disposition_begin]
    local device_begin = dispositions_to_device[disposition_begin]
 
-   local parsed_schedule_begin = parse("0 "..cj.cronjob_schedules[jobnum])
+   local parsed_schedule_begin = ccparse("0 "..cj.cronjob_schedules[jobnum])
    local jobnum = cj.cronjob_md5sumhexa_to_jobnum[md5sum_end]
    local disposition_end = dispositions_to_device[cj.cronjob_dispositions[jobnum]]
    local disposition_end = cj.cronjob_dispositions[jobnum]
    local disposition_action_end = dispositions_to_action[disposition_end]
    local device_end = dispositions_to_device[disposition_end]
 
-   local parsed_schedule_end = parse("0 "..cj.cronjob_schedules[jobnum])
-   local clear_begin = next(parsed_schedule_begin)
-   local clear_end = next(parsed_schedule_end)
+   local parsed_schedule_end = ccparse("0 "..cj.cronjob_schedules[jobnum])
+   local clear_begin = ccnext(parsed_schedule_begin)
+   local clear_end = ccnext(parsed_schedule_end)
    local held = {}
    for k,v in ipairs(cj.cronjob_dispositions) do
       if v == disposition_end then
-	 local parsed_possible_conflict = parse("0 "..cj.cronjob_schedule[k])
-	 local possible_conflict_begin = next(parsed_possible_conflict)
+	 local parsed_possible_conflict = ccparse("0 "..cj.cronjob_schedule[k])
+	 local possible_conflict_begin = ccnext(parsed_possible_conflict)
 	 if possible_conflict_begin >= clear_begin and possible_conflict_begin <= clear_end then
 	    hold_job(cj,k,md5sum_begin.." "..md5sum_end)
 	    table.insert(held, k)
@@ -1804,21 +1871,21 @@ local function execute_last_cron_statement_regarding_device( devices_to_execute 
 	 
 	 if v == dispositions_cmdline[devicenum][1] or v == dispositions_cmdline[devicenum][2] then
 	    table.insert(cron_in_the_running_list,k)
-	    local a = parse("0 "..cj.cronjob_schedules[k])
+	    local a = ccparse("0 "..cj.cronjob_schedules[k])
 	    pp("parsing: 0 "..cj.cronjob_schedules[k])
 	    
 	    pp(cj.cronjob_schedules[k])
-	    local c = prev(a)
-	    pp(v.." = "..c)
+	    local c = ccprev(a)
+--	    pp(v.." = "..c)
 	    table.insert(cron_in_the_running_list_times,c)
 	 end
       end
       pp("cron_in_the_running_list_times:")
       pp(ins(cron_in_the_running_list_times))
       local k,v = maxArrayValueAndItsKey(cron_in_the_running_list_times, function(a,b) return a < b end)
-      pp("not evoking the `on boot we must execute' directive:")
+      pp("not starting the `on boot we must execute' directive(s):")
       pp(cj.cronjob_dispositions[cron_in_the_running_list[k]]) 
---debug      os.execute(cj.cronjob_dispositions[cron_in_the_running_list[k]])
+--      os.execute(cj.cronjob_dispositions[cron_in_the_running_list[k]])
    end -- for each device ends here --
 end
 
