@@ -7,19 +7,20 @@
        messages received over port 29998 consisting of commands issued
        to do so via cron scheduling, or via telnet from an opened
        terminal, or from the send_to_smart_device_svr.lua client.
-       Recognized commands include: `turn off wifi', `in 30 minutes
+       Recognized commands include: `0`, `1', `turn off wifi', `in 30 minutes
        turn wifi on for 2 hours and 30 minutes', `on 2009-11-05
        disable wifi for 30 minutes at 3:00 pm', `on mon,tue,wed turn
        on wifi for 5 hours at 3:00pm' and variations on these themes.
-       When using telnet, the user is only allowed 30 seconds to type
+
+     When using telnet, the user is only allowed 30 seconds to type
        in a command.  In the case of a two part non-recurring on and
        off command, if there exists conflicting events in crontab
        which prevent the command from uninterrupted fulfillment, then
        those events are commented out in the crontab, effectively
        placed on hold until the given command can run its course,
-       after which time they are effectively unheld.
+       after which time they are unheld.
 
-       Additionally, at bootup, when the program is started, it
+     Additionally, at bootup, when the program is started, it
        assumes that the computer was offline during the last scheduled
        cron statement relating to turning on or off the device(s), and
        so, looks at the current users cron table and executes the last
@@ -40,10 +41,14 @@
           luasocket must have in its src directory a copy of lua.h luaconf.h and luaxlib.h pertaining to lua-5.1, which have already been provided.
 
      Scheduling:
-          # This is an example crontab I've been using ( set with crontab -e, notice that there are no seconds fields ):
+          The following scripts must be placed in /usr/bin:
+             send_to_smart_device_svr.lua  
+             start_smart_device_svr.sh
+
+          This is an example crontab I've been using ( set with crontab -e, notice that there are no seconds fields ):
 
 
-            59 21 * * sun,mon,tue,wed,thu screen -dm emacs -nw -Q -l /home/pi/scripts/disable_wifi.el
+            59 22 * * sun,mon,tue,wed,thu screen -dm emacs -nw -Q -l /home/pi/scripts/disable_wifi.el
 
             0 15 * * mon,tue,wed,thu,fri screen -dm emacs -nw -Q -l /home/pi/scripts/enable_wifi.el
             59 23 * * fri,sat screen -dm emacs -nw -Q -l /home/pi/scripts/disable_wifi.el
@@ -63,11 +68,11 @@
           LuaJIT-2.0.5 is from http://luajit.org/download.html
 
      Authors/Maintainers: ciscorx@gmail.com
-       Version: 0.3
-       Commit date: 2019-12-17
+       Version: 0.4
+       Commit date: 2019-12-26
 
-       7z-revisions.el_rev=939.0
-       7z-revisions.el_sha1-of-last-revision=0d3275508e0799f0246284d596f490a7b7863689
+       7z-revisions.el_rev=1039.0
+       7z-revisions.el_sha1-of-last-revision=834f2e8bbc1a8fa0e1ec11428c1d92af622cd7cf
 --]]
 
 local devices_list = {"wifi"}
@@ -106,7 +111,7 @@ local ccronexpr_misc_utils = ffi.load("./ccronexpr_misc_utils.so")
 local errormsg_file = "/tmp/.errormsg.txt"
 local smart_device_client_cmd = "send_to_smart_device_svr.lua"
 local port_number_for_which_to_listen = 29998
-local onhold_token = "^#%s*ON%s*HOLD%s*(%x*)%s*(%x*)#%s*"
+local onhold_token = "^#%s*ON%s*HOLD%s*(%x*)%s*(%x*)%s*#%s*"
 local tmp_token = " #TMP"  -- this token must include a preceding space
 local default_actions_list = {"turn","disable","enable"}
 local default_action_disposition_numbers = {0,1,2}
@@ -450,6 +455,10 @@ local function calculate_dow_from_date(date)
    return result
 end
 
+local function print_current_datetime()
+   local now = os.date("*t")
+   pp(string.format("%04d",now.year).."/"..string.format("%02d",now.month).."/"..string.format("%02d",now.day).." "..string.format("%02d",now.hour)..":"..string.format("%02d",now.min)..":"..string.format("%02d",now.sec))
+end
 
 local function days_in_month_of(month, year)
    local leap_year
@@ -844,6 +853,15 @@ local function remove_extra_spaces(s)
    return s:gsub("%s+"," ")
 end
 
+local function str_remove_newline_if_present(s)
+   local strlen = #s
+   if s:sub(strlen, strlen) == "\n" then
+      return s:sub(1,strlen -1)
+   else
+      return s
+   end
+end
+
 local function change_all_slashes_to_hyphens(s)
    return s:gsub("/","-")
 end
@@ -861,10 +879,12 @@ local function array_to_string(array, separator)
       retval = retval..v..separator
    end
    retval = retval:sub(1,-1 - #separator )
+   return retval
 end
 
-local function string_add_leading_zeros( str, places)
+local function str_add_leading_zeros( places, str)
    local leading_zeros = ""
+   pp("adding "..places.." zeros")
    for i = 1,places do
       leading_zeros = leading_zeros.."0"
    end
@@ -875,11 +895,11 @@ local function str_is_less_than_p( str1, str2)
    local str1_len = #str1
    local str2_len = #str2
    if str1_len > str2_len then 
-      local str_diff = str2_len - str1_len
-      str2 = string_add_leading_zeros( str_diff,str2)
-   elseif str1_len < str2_len then
       local str_diff = str1_len - str2_len
-      str1 = string_add_leading_zeros( str_diff,str1)
+      str2 = str_add_leading_zeros( str_diff,str2)
+   elseif str1_len < str2_len then
+      local str_diff = str2_len - str1_len
+      str1 = str_add_leading_zeros( str_diff,str1)
    end
    if str1 < str2 then
       return true
@@ -888,17 +908,34 @@ local function str_is_less_than_p( str1, str2)
    end
 end
 
-local function str_is_greater_than_p( str1, str2)
+local function str_is_less_than_or_equal_to_p( str1, str2)
    local str1_len = #str1
    local str2_len = #str2
    if str1_len > str2_len then 
-      local str_diff = str2_len - str1_len
-      str2 = string_add_leading_zeros( str_diff,str2)
-   elseif str1_len < str2_len then
       local str_diff = str1_len - str2_len
-      str1 = string_add_leading_zeros( str_diff,str1)
+      str2 = str_add_leading_zeros( str_diff,str2)
+   elseif str1_len < str2_len then
+      local str_diff = str2_len - str1_len
+      str1 = str_add_leading_zeros( str_diff,str1)
    end
-   if str1 > str2 then
+   if str1 <= str2 then
+      return true
+   else
+      return false
+   end
+end
+
+local function str_is_greater_than_or_equal_to_p( str1, str2)
+   local str1_len = #str1
+   local str2_len = #str2
+   if str1_len > str2_len then 
+      local str_diff = str1_len - str2_len
+      str2 = str_add_leading_zeros( str_diff,str2)
+   elseif str1_len < str2_len then
+      local str_diff = str2_len - str1_len
+      str1 = str_add_leading_zeros( str_diff,str1)
+   end
+   if str1 >= str2 then
       return true
    else
       return false
@@ -1450,6 +1487,9 @@ local function get_cron_jobs()
    cron.cronjob_schedules = {}
    cron.cronjob_dispositions = {}
    cron.cronjob_line_numbers = {}
+   cron.cronjob_smart_device_client_cmds = {}
+   cron.cronjob_smart_device_client_cmds_cmd = {}
+   cron.cronjob_smart_device_client_cmds_line_numbers = {}
    cron.onholdjobs = {}
    cron.onholdjob_md5sumhexa = {}
    cron.onholdjob_schedules = {}
@@ -1472,6 +1512,11 @@ local function get_cron_jobs()
 
 	 if field6 then  
 	    pp("field6 = "..field6)
+	    if starts_with(field6,smart_device_client_cmd) then 
+	       table.insert(cron.cronjob_smart_device_client_cmds,v)
+	       table.insert(cron.cronjob_smart_device_client_cmds_line_numbers,line_num)
+	       table.insert(cron.cronjob_smart_device_client_cmds_cmd,field6:match(smart_device_client_cmd.."%s+(%S+)"))
+	    end
 	    table.insert( cron.cronjobs,v)
 
 	    table.insert( cron.cronjob_line_numbers, line_num)
@@ -1488,9 +1533,6 @@ local function get_cron_jobs()
 	       table.insert( cron.cronjob_md5sumhexa, md5.sumhexa(v))
 	    end
 	 end
-      elseif v == '' then   -- preserve empty lines
-	 table.insert(cron.cron_all,"\n")
-
       else  -- cron statements that begin with a comment
 	 onhold_key, onhold_key2, field1, field2, field3, field4, field5, field6 = v:match(onhold_token.."%s*(%S+)%s+(%S+)%s+(%S+)%s+(%S+)%s+(%S+)%s+(.*)$")
 	 if onhold_key then pp("onhold_key="..onhold_key) end
@@ -1537,7 +1579,24 @@ local function get_cron_jobs()
 end  -- get_cron_jobs() ends here --
 
 
+local function tblDeleteLine(t,d)
+   if not d then 
+      return t
+   end
+   local new_table = {}
+   for k,v in ipairs(t) do
+      if k ~= d then
+	 table.insert(new_table,v)
+      end
+   end
+   return new_table
+end
+
 local function tblDeleteLines(t,d)
+   if not d or is_empty(d) then
+      return t
+   end
+   pp("deleting "..#d.." lines")
    local line = 1
    local new_table = {}
    local setd = {}
@@ -1602,6 +1661,7 @@ end
 local function submit_crontab(array)
    if isdir("/tmp") then
       pp("now writing crontab")
+      print_current_datetime()
       pp(array) --debug
       local tmpfilename = randomString(10)
       local fileh = assert(io.open("/tmp/"..tmpfilename,"w"))
@@ -1616,26 +1676,6 @@ local function submit_crontab(array)
    end
 end
 
-local function unhold_all_jobs()
-   local cj = get_cron_jobs()
-   local no_held_jobs_found = true
-   for _,onholdjob_linenum in ipairs(cj.onholdjob_line_numbers) do
-      local cronline =  cj.cron_all[onholdjob_linenum]     
-
-      local onhold_token_begin, onhold_token_end = cronline:find(onhold_token)
-      if onhold_token_end then
-
-	 no_held_jobs_found = false
-	 cronline = cronline:sub(onhold_token_end + 1,-1)
-      pp(cronline)
-	 cj.cron_all[onholdjob_linenum] = cronline
-
-      end
-   end
-   if not no_held_jobs_found then
-      submit_crontab(cj.cron_all)
-   end
-end
 
 local function hold_job (cj, jobnum, md5sums_of_hold_instigator )
    if not md5sums_of_hold_instigator then
@@ -1644,7 +1684,8 @@ local function hold_job (cj, jobnum, md5sums_of_hold_instigator )
    local cronlinenum = cj.cronjob_line_numbers[jobnum]
    local cronline = cj.cron_all[cronlinenum]
    cronline = "#ONHOLD "..md5sums_of_hold_instigator.." #"..cronline
-   cj.cron_all[onholdjob_linenum] = cronline
+--   cj.cron_all[onholdjob_linenum] = cronline
+   cj.cron_all[cronlinenum] = cronline
 end
 
 local function hold_all()
@@ -1670,41 +1711,164 @@ local function unhold_job( cj, md5sum )
    end
 end
 
--- todo: look at onholdjobs also, because they might be unheld during the
--- given time frame, specifically look at any unhold dispositions
-local function clear_schedule_for(md5sums_begin,md5sum_end)
---   local md5sum_begin, md5sum_end = md5sums_string:match("(%x+)%s*[, ]?%s*(%x+)")
+local function unhold_all_jobs()
    local cj = get_cron_jobs()
-   local job_linenumbers_to_be_held = {}
-   local jobnum = cj.cronjob_md5sumhexa_to_jobnum[md5sum_begin]
-   local disposition_begin = cj.cronjob_dispositions[jobnum]
-   local disposition_action_begin = dispositions_to_action[disposition_begin]
-   local device_begin = dispositions_to_device[disposition_begin]
+   local no_held_jobs_found = true
+   for _,onholdjob_linenum in ipairs(cj.onholdjob_line_numbers) do
+      local cronline =  cj.cron_all[onholdjob_linenum]     
 
-   local parsed_schedule_begin = ccparse("0 "..cj.cronjob_schedules[jobnum])
-   local jobnum = cj.cronjob_md5sumhexa_to_jobnum[md5sum_end]
-   local disposition_end = dispositions_to_device[cj.cronjob_dispositions[jobnum]]
-   local disposition_end = cj.cronjob_dispositions[jobnum]
-   local disposition_action_end = dispositions_to_action[disposition_end]
-   local device_end = dispositions_to_device[disposition_end]
+      local onhold_token_begin, onhold_token_end = cronline:find(onhold_token)
+      if onhold_token_end then
 
-   local parsed_schedule_end = ccparse("0 "..cj.cronjob_schedules[jobnum])
-   local clear_begin = ccnext(parsed_schedule_begin)
-   local clear_end = ccnext(parsed_schedule_end)
-   local held = {}
-   for k,v in ipairs(cj.cronjob_dispositions) do
-      if v == disposition_end then
-	 local parsed_possible_conflict = ccparse("0 "..cj.cronjob_schedule[k])
-	 local possible_conflict_begin = ccnext(parsed_possible_conflict)
-	 if possible_conflict_begin >= clear_begin and possible_conflict_begin <= clear_end then
-	    hold_job(cj,k,md5sum_begin.." "..md5sum_end)
-	    table.insert(held, k)
-	 end
+	 no_held_jobs_found = false
+	 cronline = cronline:sub(onhold_token_end + 1,-1)
+      pp(cronline)
+	 cj.cron_all[onholdjob_linenum] = cronline
+
       end
    end
-   table.insert(cj.cron_all,schedule_end.." "..smart_device_client_cmd.." unhold "..array_to_string(held).." delete "..md5sum_begin.." "..md5sum_end)
-   submit_crontab(cj.cron_all)     
+   if not no_held_jobs_found then
+      submit_crontab(cj.cron_all)
+   end
 end
+
+local function ccnext2(schedule)
+   if schedule then
+      local handle_misc = io.popen('./cron_next_epoch_time_this_line_should_execute "'..schedule..'"')
+      local next_schedule = handle_misc:read("*a")
+      handle_misc:close()
+      return next_schedule
+   end
+      
+end
+
+
+local function epoch_to_schedule(epoch)
+   local tbl = os.date("*t",epoch)
+   return tbl.min.." "..tbl.hour.." ".. tbl.day.." ".. tbl.month.." *"
+end
+
+local function schedule_to_epoch(schedule)
+   local tbl = {}
+   local now = os.date("*t")
+   local field1, field2, field3, field4, field5, field6 = schedule:match("^%s*(%S+)%s+(%S+)%s+(%S+)%s+(%S+)%s+(%S+)")
+   tbl.min, tbl.hour, tbl.day, tbl.month, tbl.wday = field1, field2, field3, field4, field5
+   tbl.year = now.year
+   
+   return tostring(os.time(tbl))
+end
+
+local function linenum_of_clear_schedule(cj,md5sum_begin,md5sum_end)
+   for k,v in ipairs(cj.cronjob_smart_device_client_cmds_cmd) do
+      if md5sum_begin and v == "clear" and cj.cronjob_smart_device_client_cmds[k]:match(md5sum_begin) then
+	 return cj.cronjob_smart_device_client_cmds_line_numbers[k]
+      end
+      if md5sum_end and v == "clear" and cj.cronjob_smart_device_client_cmds[k]:match(md5sum_end) then
+	 return cj.cronjob_smart_device_client_cmds_line_numbers[k]
+      end
+   end
+   return nil
+end
+
+local function linenum_of_unhold_delete(cj,unhold_str,delete_str)
+   for k,v in ipairs(cj.cronjob_smart_device_client_cmds_cmd) do
+      if unhold_str and v == "unhold" and cj.cronjob_smart_device_client_cmds[k]:match(unhold_str) then
+	 return cj.cronjob_smart_device_client_cmds_line_numbers[k]
+      end
+      if delete_str and v == "delete" and cj.cronjob_smart_device_client_cmds[k]:match(delete_str) then
+	 return cj.cronjob_smart_device_client_cmds_line_numbers[k]
+      end
+   end
+end
+
+-- todo: look at onholdjobs also, because they might be unheld during the
+-- given time frame, specifically look at any unhold dispositions
+local function clear_schedule_for(md5sum_begin,md5sum_end)
+--   local md5sum_begin, md5sum_end = md5sums_string:match("(%x+)%s*[, ]?%s*(%x+)")
+   local cj = get_cron_jobs()
+   if cj then
+      local job_linenumbers_to_be_held = {}
+      local jobnum = cj.cronjob_md5sumhexa_to_jobnum[md5sum_begin]
+      if not jobnum then
+	 return
+      end
+      local disposition_begin = cj.cronjob_dispositions[jobnum]
+      local disposition_action_begin = dispositions_to_action[disposition_begin]
+      local device_begin = dispositions_to_device[disposition_begin]
+
+--debug   local parsed_schedule_begin = ccparse("0 "..cj.cronjob_schedules[jobnum])
+--   pp(ins(cj))
+      pp("md5sum_begin:")
+      pp(md5sum_begin)
+      pp(jobnum)
+      pp(cj.cronjob_schedules[jobnum])
+--      local clear_begin = str_remove_newline_if_present(ccnext2(cj.cronjob_schedules[jobnum]))
+      local clear_begin = schedule_to_epoch(cj.cronjob_schedules[jobnum])
+
+
+
+      local jobnum = cj.cronjob_md5sumhexa_to_jobnum[md5sum_end]
+      if not jobnum then
+	 return
+      end
+
+--      local device_end = dispositions_to_device[cj.cronjob_dispositions[jobnum]]
+      local disposition_end = cj.cronjob_dispositions[jobnum]
+      local disposition_action_end = dispositions_to_action[disposition_end]
+      local device_end = dispositions_to_device[disposition_end]
+
+--debug   local parsed_schedule_end = ccparse("0 "..cj.cronjob_schedules[jobnum])
+--debug   local clear_begin = ccnext(parsed_schedule_begin)
+--debug   local clear_end = ccnext(parsed_schedule_end)
+      pp(cj.cronjob_schedules[jobnum])
+      local schedule_end = cj.cronjob_schedules[jobnum]
+--      local clear_end = str_remove_newline_if_present(ccnext2(schedule_end))
+      local clear_end = schedule_to_epoch(schedule_end)
+      schedule_end = epoch_to_schedule(tonumber(clear_end)+60)
+      local held = {}
+      pp("check conflict range-")
+      pp("clear_begin:")
+      pp(ins(clear_begin))
+      pp("clear_end:")
+      pp(ins(clear_end))     
+      for k,v in ipairs(cj.cronjob_dispositions) do
+	 if v == disposition_end then
+	    --debug	 local parsed_possible_conflict = ccparse("0 "..cj.cronjob_schedule[k])
+--debug	 local possible_conflict_begin = ccnext(parsed_possible_conflict)
+	    pp(cj.cronjob_schedules[k])
+	    local possible_conflict_begin = str_remove_newline_if_present(ccnext2(cj.cronjob_schedules[k]))
+	    pp("possible_conflict_begin:")
+	    pp(possible_conflict_begin)
+	    if str_is_greater_than_or_equal_to_p(possible_conflict_begin,clear_begin) and str_is_less_than_or_equal_to_p(possible_conflict_begin,clear_end) and cj.cronjob_md5sumhexa[k] ~= md5sum_begin and cj.cronjob_md5sumhexa[k] ~= md5sum_end  then
+	       pp("hold job:")
+	       pp(md5sum_begin)
+	       hold_job(cj,k,md5sum_begin.." "..md5sum_end)
+	       table.insert(held, cj.cronjob_md5sumhexa[k])
+	       pp(ins(held))
+
+	    end
+	 end
+      end
+      local held_items = array_to_string(held)
+      pp("held_items:")
+      pp(ins(held))
+      pp(held_items)
+      if held_items then
+	 table.insert(cj.cron_all,schedule_end.." "..smart_device_client_cmd.." unhold "..held_items.." delete "..md5sum_begin.." "..md5sum_end)
+      else
+	 table.insert(cj.cron_all,schedule_end.." "..smart_device_client_cmd.." delete "..md5sum_begin.." "..md5sum_end)
+      end	
+      local line_num_of_clear = linenum_of_clear_schedule(cj,md5sum_begin,md5sum_end)
+      
+      if line_num_of_clear then
+	 cj.cron_all = tblDeleteLine(cj.cron_all,line_num_of_clear)
+	 pp("deleting line_num_of_clear:")
+	 pp(line_num_of_clear)
+      end
+      submit_crontab(cj.cron_all)     
+   end
+end
+
 
 local function unhold_jobs_delete_jobs(unhold_str,delete_str)
    local cj = get_cron_jobs()
@@ -1714,12 +1878,23 @@ local function unhold_jobs_delete_jobs(unhold_str,delete_str)
    local jobs_to_delete_linenums = {}
    for md5sum in delete_str:gmatch("%w+") do
       table.insert(jobs_to_delete_linenums, cj.cronjob_md5sumhexa_to_linenum[md5sum])
+      pp("deleting md5sum:")
+      pp(md5sum)
+      pp(cj.cronjob_md5sumhexa_to_linenum[md5sum])
+
    end
 
    -- bubbleSortAssociatedArraysReverse(jobs_to_delete_linenums)
    -- for _,v in ipairs(jobs_to_delete_linenums) do
    --    table.remove(cj.cron_all,v)
    -- end
+   local line_num_of_unhold_delete = linenum_of_unhold_delete(cj,unhold_str,delete_str)
+      
+   if line_num_of_unhold_delete then
+      pp("deleting line_num_of_unhold_delete:")
+      pp(line_num_of_unhold_delete)
+      table.insert(jobs_to_delete_linenums, line_num_of_unhold_delete)
+   end
    cj.cron_all = tblDeleteLines(cj.cron_all,jobs_to_delete_linenums)
    submit_crontab(cj.cron_all)   
 end
@@ -1732,9 +1907,34 @@ local function delete_old_cron_jobs()
    local cron_line_numbers_not_to_be_deleted = {}
    local cron_text_to_be_deleted = {}
    local cron_text_not_to_be_deleted = {}
+   local now = os.time()
+   local cut_off_date = now - 60*60*24*2  -- delete all #TMP thats more than 2 days old
+   pp("cut_off_date:")
+   pp(cut_off_date)
+   for k,v in ipairs(cron.tmp_schedules) do
+      local epoch_time = tonumber(schedule_to_epoch(v))
+      pp("epoch_time:")
+      pp(epoch_time)
+      if epoch_time < cut_off_date then
+	 table.insert(cron_line_numbers_to_be_deleted, cron.tmp_line_numbers[k])
+      end
+   end
+   pp("cron_line_numbers_to_be_deleted:")
+   pp(ins(cron_line_numbers_to_be_deleted))
+   local newcron = tblDeleteLines(cron.cron_all,cron_line_numbers_to_be_deleted)
+   submit_crontab(newcron)
+end
+
+local function DEFUNCTdelete_old_cron_jobs()
+   local cron = get_cron_jobs()
+   local cron_to_be_checked = {}
+   local cron_line_numbers_to_be_deleted = {}
+   local cron_line_numbers_not_to_be_deleted = {}
+   local cron_text_to_be_deleted = {}
+   local cron_text_not_to_be_deleted = {}
 
    for k,v in ipairs(cron.cronjob_dispositions) do
-      if k:match("#%s*tmp%s*$") then
+      if k:match("#%s*TMP%s*$") then
 	 table.insert(cron_to_be_checked,k)
       end
    end
@@ -1864,6 +2064,7 @@ local function execute_last_cron_statement_regarding_device( devices_to_execute 
       local cron_in_the_running_list = {}
       local cron_in_the_running_list_times = {}
       local devicenum = device_in_question_to_device_number[device]
+      print_current_datetime()
       pp(ins(cj))
 --      pp(dispositions_cmdline[1][1])  -- 1 is off and 2 is on
       for k,v in ipairs( cj.cronjob_dispositions ) do
@@ -1871,21 +2072,25 @@ local function execute_last_cron_statement_regarding_device( devices_to_execute 
 	 
 	 if v == dispositions_cmdline[devicenum][1] or v == dispositions_cmdline[devicenum][2] then
 	    table.insert(cron_in_the_running_list,k)
-	    local a = ccparse("0 "..cj.cronjob_schedules[k])
+--	    local a = ccparse("0 "..cj.cronjob_schedules[k]) -- debug
 	    pp("parsing: 0 "..cj.cronjob_schedules[k])
 	    
 	    pp(cj.cronjob_schedules[k])
-	    local c = ccprev(a)
+--	    local c = ccprev(a)        -- debug: not working properly
 --	    pp(v.." = "..c)
-	    table.insert(cron_in_the_running_list_times,c)
+	                               -- Temporary work around:
+	    local handle_c2 = io.popen('./cron_last_epoch_time_this_line_was_supposedly_executed "'..cj.cronjob_schedules[k]..'"')
+	    local c2 = handle_c2:read("*a")
+	    handle_c2:close()
+	    table.insert(cron_in_the_running_list_times,c2)
 	 end
       end
       pp("cron_in_the_running_list_times:")
       pp(ins(cron_in_the_running_list_times))
-      local k,v = maxArrayValueAndItsKey(cron_in_the_running_list_times, function(a,b) return a < b end)
-      pp("not starting the `on boot we must execute' directive(s):")
+      local k,v = maxArrayValueAndItsKey(cron_in_the_running_list_times, str_is_less_than_p)
+      pp("Starting the `on boot we must execute' directive(s):")
       pp(cj.cronjob_dispositions[cron_in_the_running_list[k]]) 
---      os.execute(cj.cronjob_dispositions[cron_in_the_running_list[k]])
+      os.execute(cj.cronjob_dispositions[cron_in_the_running_list[k]])
    end -- for each device ends here --
 end
 
@@ -1907,7 +2112,7 @@ local function tbl_to_schedule_string (tbl)
    if not dow then 
       dow = "*"
    end
-   schedule_string = tbl.min.." "..tbl.hour.." "..tbl.day.." "..tbl.month.." "..dow.." "
+   schedule_string = tbl.min.." "..tbl.hour.." "..tbl.day.." "..tbl.month.." "..dow
 
    -- if tbl.min then 
    --    schedule_string = schedule_string.." "..tbl.min
@@ -1918,6 +2123,16 @@ local function tbl_to_schedule_string (tbl)
    -- if tbl.day then
    --    schedule_string = schedule_string.."
    return schedule_string
+end
+
+
+local function tbl_is_now_p(tbl)
+   local now = os.date('*t')
+   if tbl and tbl.min == now.min and tbl.hour == now.hour and tbl.day == now.day and tbl.month == now.month then
+      return true
+   else
+      return false
+   end
 end
 
 -- The mechanism of add_new_schedule() is as follows: when a new
@@ -1935,25 +2150,37 @@ end
 -- deletion of the new schedule, start to end, to take place at the
 -- delimiting new schedule
 local function add_new_schedule(tbl_begin, disposition_begin, tbl_end, disposition_end)
+
+
    local cj = get_cron_jobs()
    local new_schedule_begin = tbl_to_schedule_string(tbl_begin)
    local new_cronline = new_schedule_begin.." "..disposition_begin
+   pp("new_cronline=="..new_cronline)
    local new_cronline_begin_md5 = md5.sumhexa(new_cronline)
+   pp("new_cronline_begin_md5=="..new_cronline_begin_md5)
    new_cronline = new_cronline.." #TMP"
+   local new_cronline_end_md5
+      
    table.insert(cj.cron_all,new_cronline)
    pp("adding new cronline: "..new_cronline)
    if tbl_end then
       local new_schedule_end = tbl_to_schedule_string(tbl_end)
-      local new_cronline = new_schedule_end.." "..disposition_begin
-      local new_cronline_end_md5 = md5.sumhexa(new_cronline)
+      local new_cronline = new_schedule_end.." "..disposition_end
+      new_cronline_end_md5 = md5.sumhexa(new_cronline)
       new_cronline = new_cronline.." #TMP"
       table.insert(cj.cron_all,new_cronline)
       table.insert(cj.cron_all,new_schedule_begin.." "..smart_device_client_cmd.." clear schedule for "..new_cronline_begin_md5.." "..new_cronline_end_md5)
       pp("also adding new cronline: "..new_cronline)
       pp("also adding yet another croline: "..new_cronline_begin_md5.." "..new_cronline_end_md5)
    end
+
    submit_crontab(cj.cron_all)
-   
+   if tbl_is_now_p(tbl_begin) and tbl_end then
+      pp("Proceeding to immediately clear schedule for:")
+      pp(new_cronline_begin_md5)
+      pp(new_cronline_end_md5)
+      clear_schedule_for(new_cronline_begin_md5, new_cronline_end_md5) 
+   end
 end
 
 local function flag_error(msg,client)
@@ -2027,8 +2254,13 @@ while 1 do
 	 if not delete_str then
 	    delete_str = line:match("delete (.*)$")
 	 end	    
-	 unhold_jobs_delete_md5(unhold_str, delete_str)
-	 
+	 unhold_jobs_delete_jobs(unhold_str, delete_str)
+      elseif starts_with(line, "0") then
+	 pp("os.execute("..dispositions_cmdline[1][1]..")")
+	 os.execute(dispositions_cmdline[1][1])
+      elseif starts_with(line, "1") then
+	 pp("os.execute("..dispositions_cmdline[1][2]..")")
+	 os.execute(dispositions_cmdline[1][2])
       else     ---- variant commands start here ----------------------------------------------------------------------------------
 	 local original_predicate, pos_original_predicate, pos_original_predicate_ends
 	 local no_device_was_specified = false
@@ -2250,7 +2482,7 @@ while 1 do
 	    end  -- is empty date_range_ends_tbl condition ends here --
 	    pp("dispositions_state_num")
 	    pp(dispositions_state_num)
-	    add_new_schedule(date_in_question_tbl,dispositions_cmdline[device_number][disposition_state_num], date_range_ends_tbl, dispositions_cmdline[device_number][disposition_state_num % 2 + 1])
+	    add_new_schedule(date_in_question_tbl,dispositions_cmdline[device_number][disposition_state_num], date_range_ends_tbl, dispositions_cmdline[device_number][(disposition_state_num - 1) % 1 + 1])
 	 end -- else no action ends here --
       end  -- else variant command ends here --
    end  -- else not err ends here --
