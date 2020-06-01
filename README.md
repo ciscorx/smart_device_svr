@@ -46,11 +46,12 @@ controls network devices using cron
 
           luasocket must have in its src directory a copy of lua.h luaconf.h and luaxlib.h pertaining to lua-5.1, which have already been provided.
 
-
-## Scheduling:
-          The following scripts must be placed in /usr/bin:
+          The following scripts are copied to /usr/bin:
              send_to_smart_device_svr.lua  
              start_smart_device_svr.sh
+
+
+## Scheduling:
 
           This is the crontab I've been using ( set with crontab -e, notice that there are no seconds fields ):
 

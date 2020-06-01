@@ -69,18 +69,20 @@
           LuaJIT-2.0.5 is from http://luajit.org/download.html
 
      Authors/Maintainers: ciscorx@gmail.com
-       Version: 0.5
-       Commit date: 2020-04-08
+       Version: 0.6
+       Commit date: 2020-06-01
 
-       7z-revisions.el_rev=1068.0
-       7z-revisions.el_sha1-of-last-revision=1a108358110da79a6bb7c33c7b08a3edb0449a8c
+       7z-revisions.el_rev=1071.0
+       7z-revisions.el_sha1-of-last-revision=46df8daec487ffe524a67496d37e309e93125fbb
 --]]
 
-local version = "0.5"
+local version = "0.6"
 local devices_list = {"wifi"}
 local dispositions_cmdline = {{"screen -dm emacs -nw -Q -l /home/pi/scripts/disable_wifi.el","screen -dm emacs -nw -Q -l /home/pi/scripts/enable_wifi.el","screen -dm emacs -nw -Q -l /home/pi/scripts/reboot_wifi.el"}}
 local disposition_states = {{"off","on","reboot"}}
-local devices_for_which_to_execute_last_cron_statement_on_boot = {"wifi"}
+local device_ip_addresses = { wifi="192.168.1.254"}
+local device_status_query_texts = { wifi={ '','>','<', "2.4 GHz Radio Status","Network name","Status","span class"}}
+local devices_for_which_to_execute_last_cron_statement_on_boot = {}
 
 dofile('inspect.lua');local ins=require('inspect')
 dofile('pp.lua');local pp=require('pp')
@@ -269,6 +271,8 @@ local function randomString(length)
     return randomString(length - 1) .. randomcharset[math.random(1, #randomcharset)]
 end
 
+
+
 --- Check if a file or directory exists in this path
 local function exists(file)
    local ok, err, code = os.rename(file, file)
@@ -285,6 +289,11 @@ end
 local function isdir(path)
    -- "/" works on both Unix and Windows
    return exists(path.."/")
+end
+
+local function file_exists(name)
+   local f=io.open(name,"r")
+   if f~=nil then io.close(f) return true else return false end
 end
 
 local function tblMerge(t1, t2)
@@ -2122,7 +2131,7 @@ local function leave_out_date_range_ends_info(line)
 end
 
 
-function maxArrayValueAndItsKey(t, fn)
+local function maxArrayValueAndItsKey(t, fn)
     if #t == 0 then return nil, nil end
     local key, value = 1, t[1]
     for i = 2, #t do
@@ -2273,6 +2282,115 @@ local function flag_error(msg,client)
    client:send(msg)
 end
 
+local function escape_pattern(text)
+   pp("escaping the following text:")
+   pp(text)
+   if not text then return "" end
+   pp( text:gsub("([^%w])", "%%%1"))
+
+   return text:gsub("([^%w])", "%%%1")
+end
+
+-- Say you wanna search a small html file for a particular string,
+-- which happens to recur ubiquitously in the file, like for example
+-- enabled or disabled.  And, there happens to be headings and
+-- subheadings that you can search to get you closer to the context of
+-- the string.  Well then, this is the function for you.  The file
+-- must be passed as a table of lines via the first parameter.  The
+-- second and third parameters are the contexts immediately preceeding
+-- and following, respectively, the target string you are interested
+-- in, on the same line.  All the remaining varied number of
+-- parameters are to be strings to search in succession, one per line,
+-- to get you closer to that target line context.
+local function tblContext_line_succession_search( tblText, strFore_delimiter, strEnd_delimiter,...)
+   local function escape_pattern(text)
+      pp("escaping the following text:")
+      pp(text)
+      if not text then return "" end
+      pp( text:gsub("([^%w])", "%%%1"))
+      
+      return text:gsub("([^%w])", "%%%1")
+   end
+   local number_of_searches = select('#',...)
+   local found_linenum
+   local search_num = 0
+   local found_line_text
+   local escaped_search_pattern = escape_pattern(select(search_num + 1,...))
+   for k,v in ipairs(tblText) do
+      if v:match(escape_search_pattern) and search_num < number_of_searches  then
+	 found_linenum = k
+	 found_line_text = v
+	 search_num = search_num + 1
+	 if search_num == number_of_searches then break end
+	 escaped_search_pattern = escape_pattern(select(search_num + 1,...))
+      end
+   end
+   
+   if search_num == number_of_searches then
+      local pattern = escape_pattern(strFore_delimiter).."(.*)"..escape_pattern(strEnd_delimiter)
+      return found_line_text:match(pattern)
+   else
+      return nil
+   end
+end
+
+
+-- This function is a modified tblContext_line_succession_search()
+local function tblContext_line_succession_search_device_status( tblText, device)
+   local number_of_searches = #device_status_query_texts[device] -2 
+   local found_linenum
+   local search_num = 0
+   local found_line_text
+   local strFore_delimiter = device_status_query_texts[device][2]
+   local strEnd_delimiter = device_status_query_texts[device][3]
+   local escaped_search_pattern = escape_pattern(device_status_query_texts[device][search_num+3])
+   for k,v in ipairs(tblText) do
+      if v:match(escaped_search_pattern) and search_num < number_of_searches  then
+	 found_linenum = k
+	 found_line_text = v
+	 search_num = search_num + 1
+	 if search_num == number_of_searches then break end
+	 
+	 escaped_search_pattern = escape_pattern(device_status_query_texts[device][search_num+3])
+      end
+   end
+   
+   if search_num == number_of_searches then
+      local pattern = escape_pattern(strFore_delimiter).."(.*)"..escape_pattern(strEnd_delimiter)
+      return found_line_text:match(pattern)
+   else
+      return nil
+   end
+end
+
+
+
+local function device_status( device )
+--   f = io.open("curled_router.html", "r")
+   local f = io.popen("curl "..device_ip_addresses[device]..device_status_query_texts[device][1])
+   pp("curl "..device_ip_addresses[device]..device_status_query_texts[device][1])
+
+   local line
+   local tblFiletext ={}
+   for line in f:lines() do
+      table.insert(tblFiletext,line)
+      pp(line)
+   end
+   
+   return tblContext_line_succession_search_device_status(tblFiletext, device)
+end
+
+   
+--    local tmphandle = io.popen("crontab -l 2>" .. errormsg_file)
+-- --debug   local tmphandle = io.popen("cat crontable") --debug
+--    local result = tmphandle:read("*a")
+--    if not result then
+--       return nil
+--    end	   
+--    tmphandle:close()
+   
+			   
+
 
 ----------------- end of function declarations --------------
 
@@ -2307,9 +2425,9 @@ while 1 do
 	 tmphandle:close()
 	 if not result then
 	    client:send("no results\n")	   
-	    tmphandle = io.open(errormsg_file, "rb")
-	    result = tmphandle.lines
-	    for result in io.lines(file) do 
+	    --tmphandle = io.open(errormsg_file, "rb")
+	    --result = tmphandle.lines
+	    for result in io.lines(errormsg_file) do 
 	       client:send(result .. "\n")	   
 	    end
 	 else	   
@@ -2325,6 +2443,10 @@ while 1 do
       elseif starts_with(line,"test") then
 	 pp("testing: hello there")
 	 client:send("hello there")
+      elseif starts_with(line,"status") then
+	 local device = line:match("status (.*)%s?")
+	 client:send("status of "..device.."="..device_status(device).."\n")	 
+	 
       elseif starts_with(line,"ver") then
 	 pp("smart_device_svr.lua version="..version)
 	 client:send("smart_device_svr.lua version="..version.."\n")	 
