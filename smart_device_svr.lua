@@ -69,18 +69,19 @@
           LuaJIT-2.0.5 is from http://luajit.org/download.html
 
      Authors/Maintainers: ciscorx@gmail.com
-       Version: 0.6
-       Commit date: 2020-06-01
+       Version: 0.7
+       Commit date: 2020-06-14
 
-       7z-revisions.el_rev=1071.0
-       7z-revisions.el_sha1-of-last-revision=46df8daec487ffe524a67496d37e309e93125fbb
+       7z-revisions.el_rev=1073.0
+       7z-revisions.el_sha1-of-last-revision=779045f3b425af2cdc4a60f04346a768d505e4a3
 --]]
 
-local version = "0.6"
-local devices_list = {"wifi"}
-local dispositions_cmdline = {{"screen -dm emacs -nw -Q -l /home/pi/scripts/disable_wifi.el","screen -dm emacs -nw -Q -l /home/pi/scripts/enable_wifi.el","screen -dm emacs -nw -Q -l /home/pi/scripts/reboot_wifi.el"}}
-local disposition_states = {{"off","on","reboot"}}
-local device_ip_addresses = { wifi="192.168.1.254"}
+local version = "0.7"
+local devices_list = {"wifi", "svr"}
+local scripts_dir = io.popen"pwd":read'*l'
+local dispositions_cmdline = {{"screen -dm emacs -nw -Q -l "..scripts_dir.."/disable_wifi.el","screen -dm emacs -nw -Q -l "..scripts_dir.."/enable_wifi.el","screen -dm emacs -nw -Q -l "..scripts_dir.."/reboot_wifi.el"},{"sudo shutdown -h now",nil,"sudo reboot"}}
+local disposition_states = {{"off","on","reboot"},{"off","on","reboot"}}
+local device_ip_addresses = { wifi="192.168.1.254", svr="localhost"}
 local device_status_query_texts = { wifi={ '','>','<', "2.4 GHz Radio Status","Network name","Status","span class"}}
 local devices_for_which_to_execute_last_cron_statement_on_boot = {}
 
@@ -114,6 +115,7 @@ local ccronexpr = ffi.load("./ccronexpr.so")
 local ccronexpr_misc_utils = ffi.load("./ccronexpr_misc_utils.so")
 local errormsg_file = "/tmp/.errormsg.txt"
 local smart_device_client_program = "send_to_smart_device_svr.lua"
+-- local smart_device_client_program = "send-to-smart-device-svr.sh"
 local port_number_for_which_to_listen = 29998
 local onhold_token = "^#%s*ON%s*HOLD%s*(%x*)%s*(%x*)%s*#%s*"
 local tmp_token = " #TMP"  -- this token must include a preceding space
@@ -130,7 +132,7 @@ local time_zoneinfo = { z=0,ut=0,gmt=0,pst=-8*3600,pdt=-7*3600
 			,est=-5*3600,edt=-4*3600}
 
 
--- This split string function works well and was copied from https://stackoverflow.com/a/7615129
+-- This split string function works well and was lifted from https://stackoverflow.com/a/7615129
 local function split(inputstr, sep) 
    sep=sep or '%s' 
    local t={} 
@@ -179,6 +181,17 @@ local function make_reverse_lookup_table(tbl)
       reverse_lookup_table[v] = k
    end
    return reverse_lookup_table
+end
+
+local function reversed_ipairs_iter(t,i)
+   i = i - 1
+   if i ~= 0 then
+      return i, t[i]
+   end
+end
+
+local function reversed_ipairs(t)
+   return reversed_ipairs_iter, t, #t + 1 
 end
 
 local function make_associative_table_between_two_arrays(array1, array2)
@@ -420,6 +433,10 @@ local function is_dow (str)
    return dow[str:sub(1,2)] 
 end
 
+local function is_dow_recurring_abbrv (str)
+   return dow_recurring_abbrv[str:sub(1,3)] 
+end
+
 local function find_dow(str)
    local possible_pos, possible_endpos, possible_dow
    local dow_found = false
@@ -633,127 +650,323 @@ local function replace_for_the_next_clause(str)
    end
 end
 
-local function extract_dow_recurring(str)
-   local possible_pos, possible_endpos,possible_dow,firstpos, lastpos
-   local dows_found = false
-   local startingpos = 1
-   local retval_tbl = {}
-   local retval_num_tbl = {}
-   local retval = ""
+
+
+-- returns a list of all elements from table A that are not in table B
+local function tblSet_difference (A, B)
+   local newhash = {}
+   for k,v in pairs(A) do
+      newhash[v]=true
+   end
+   for k,v in pairs(B) do
+      newhash[v]=nil
+   end
+   local tblReturn = {}
    local i = 0
+   for k,v in pairs(A) do
+      if newhash[v] then
+	 i=i+1
+	 tblReturn[i]=v
+      end
+   end
+   return tblReturn
+end
 
 
+-- This function takes a list of lines and returns its contents in a
+-- new list, sorted and after having removed all extra occurrences of
+-- each line within the list.
+function tblUniquify (tblInput)
+   local tblInputCopy = tblShallow_copy(tblInput)
+   local tblNew = {}
+   local last_line
+   table.sort(tblInputCopy)
+   for k,v in ipairs(tblInputCopy) do
+      if v ~= last_line then
+	 table.insert(tblNew,v)
+      end
+      last_line = v
+   end
+   return tblNew
+end
+
+-- This function returns 3 values: the str after the dow part is
+-- extracted, the dow string used as the 5th field in the crontable
+-- schedule, and a string to be pasted to after the final cron
+-- schedule and before its disposition string, used for things like
+-- `every other week'.  A single 3 letter reference to a day of the
+-- week is not enough to qualify as recurring unless its proceeded by
+-- the word 'every'.  Whereas, a comma delineated list of 3 letter
+-- abbreviations of days of the week is assumed to be recurring.  A
+-- single 3 letter dow reference could simply be referring to a
+-- particular day of the week, this week, and not to a recurring
+-- event.
+function extract_dow_recurring(str)
+   local possible_pos, possible_endpos,possible_dow
+   local possible_dow2
+   local firstpos, lastpos
+   local prepend_to_cron_disposition 
+   local tblSpanning = {}
+   local tblSpanning_except = {}
+   local except_pos, except_pos_end
+   local Spanning_count
+   local tblDow_nums = {}
+   local tblDow_num_exceptions = {}
+   local tblDelete_pos_range = {}
+   local i = 0
+   str = " " .. str .. " "
+   local function parse_spanning ()
+      local dow_num = dow_recurring_abbrv[possible_dow] 
+      local j
+      local dow_num2 = dow_recurring_abbrv[possible_dow2] 
+      if dow_num and dow_num2 and dow_num ~= dow_num2 then
+	 if dow_num > dow_num2 then
+	    j = dow_num2 + 7
+	 else
+	    j = dow_num2
+	 end
+	 if except_pos and except_pos < possible_pos then
+	       --  table.insert(tblDow_num_exceptions,dow_recurring[possible_dow])
+	    table.insert(tblSpanning_except, {dow_num,j})
+	 else
+	    table.insert(tblSpanning, {dow_num,j})
+	    --   table.insert(tblDow_nums, dow_recurring[possible_dow])
+	 end
+	    
+	 table.insert( tblDelete_pos_range , {possible_pos,possible_endpos})
+      end
+      startingpos=possible_endpos
+   end
+
+   local function find_except_pos()
+      except_pos, except_pos_end = string.find(str," except ")
+      if not except_pos then
+	 except_pos, except_pos_end = string.find(str," but not ")
+      end      
+   end
+
+   local function delete_pos_range()
+      if #tblDelete_pos_range ~= 0 then
+	 pp('delete_pos_range:')
+	 pp(ins(tblDelete_pos_range))
+	 pp(str)
+	 for _,v in reversed_ipairs(tblDelete_pos_range) do
+	    str=str:sub(1,v[1]-1)..str:sub(v[2]+1,-1)
+	 end
+	 pp(str)
+	 tblDelete_pos_range = {}
+	 find_except_pos()
+      end
+   end
+   
+   local tmp_pos, tmp_end_pos = string.find(str," every day ")
+   if not tmp_pos then
+      tmp_pos, tmp_end_pos = string.find(str, " each day ")
+      if not tmp_pos then
+	 tmp_pos, tmp_end_pos = string.find(str, " all week long ")
+	 if not tmp_pos then
+	    tmp_pos, tmp_end_pos = string.find(str, " all week ")
+	 end
+      end
+   end
+   if tmp_pos then
+      str=str:sub(1,tmp_pos)..str:sub(tmp_end_pos,-1)
+      tblDow_nums = { 0,1,2,3,4,5,6 }
+   end
+   
+   local tmp_pos, tmp_end_pos, tmp_val = string.find(str," every other week ")
+   if tmp_pos then
+      prepend_to_cron_disposition = [[ expr `date +%\%d` %\% 2 > /dev/null || ]]
+   else
+      tmp_pos, tmp_end_pos = string.find(str, " every third week ")
+      if tmp_pos then
+	 prepend_to_cron_disposition = [[ expr `date +\%d` \% 3 > /dev/null || ]]
+      else
+	 tmp_pos, tmp_end_pos = string.find(str, " every 3rd week ")
+	 if tmp_pos then
+	    prepend_to_cron_disposition = [[ expr `date +\%d` \% 3 > /dev/null || ]]
+	 else
+	    tmp_pos, tmp_end_pos, tmp_val = string.find(str, " every (%d+)th week ")
+	    if tmp_pos then
+	       prepend_to_cron_disposition = [[ expr `date +\%d` \% "..tmp_val.." > /dev/null || ]]
+	    end
+	 end
+      end
+   end
+   if tmp_pos then
+      str=str:sub(1,tmp_pos)..str:sub(tmp_end_pos,-1)
+   end
+	 
+	 
+   find_except_pos()
+   
+   -- look for dash delineated spanning of abbreviated or unabbreviated dow
+   local startingpos = 1
    repeat
+      possible_pos, possible_endpos,possible_dow,  possible_dow2 = string.find(str,"([mtwtfss][ouehrau][neduitn])%l*%s*-%s*([mtwtfss][ouehrau][neduitn])%l*", startingpos)
+      if possible_dow then
+	 parse_spanning()	 
+	 startingpos=possible_endpos
+      else
+	 break
+      end
+   until false 
+   delete_pos_range() 
+   
+   
+
+   -- -- look for spanning via `through'
+   -- startingpos = 1
+   -- repeat
+   --    possible_pos, possible_endpos,possible_dow,  possible_dow2 = string.find(str,"([mtwtfss][ouehrau][neduitn])%s*through%s*([mtwtfss][ouehrau][neduitn])", startingpos)
+   --    if possible_dow then
+   -- 	 parse_spanning()
+   -- 	 startingpos=possible_endpos
+   --    else
+   -- 	 break
+   --    end
+   -- until false
+   -- delete_pos_range()
+
+   -- look for `through' delineated spanning of un-abbreviated dow
+   startingpos = 1
+   repeat
+  --    possible_pos, possible_endpos,possible_dow,  possible_dow2 = string.find(str,"([mtwtfss][ouehrau][neduitn][dsnrdud][adesara][yasdydy]%l*)%s*through%s*([mtwtfss][ouehrau][neduitn][dsnrdud][adesara][yasdydy]%l*)", startingpos)
+      possible_pos, possible_endpos,possible_dow,  possible_dow2 = string.find(str,"([mtwtfss][ouehrau][neduitn])%l*%s*through%s*([mtwtfss][ouehrau][neduitn])%l*", startingpos)
+      if possible_dow then
+	 parse_spanning()
+	 startingpos=possible_endpos
+      else
+	 break
+      end
+   until false
+   delete_pos_range()
+   
+   -- translate the spanned numbers to individual dow numbers
+   if #tblSpanning > 0 then
+      for k,v in ipairs(tblSpanning) do
+	 for i = v[1],v[2] do
+	    table.insert(tblDow_nums, i % 7)
+	 end
+      end
+   end
+   if #tblSpanning_except > 0 then
+      for k,v in ipairs(tblSpanning_except) do
+	 for i = v[1],v[2] do
+	    table.insert(tblDow_num_exceptions,i % 7)
+	 end
+      end
+   end
+
+   
+   -- look for recurring dow in the form of mondays tuesdays, etc.
+   startingpos = 1
+   i = 0
+   repeat
+      pp'startingpos'
+      pp(startingpos)
       possible_pos,possible_endpos,possible_dow = string.find(str," ([mtwtfss][ouehrau])", startingpos)
+      pp'possible_dow'
       pp(possible_dow)	 
       if possible_dow then
 	 possible_pos,possible_endpos,possible_dow = string.find(str, "(%l+)", possible_pos)
+	 
+	 pp'possible_pos'
 	 pp(possible_pos)
+	 pp'possible_endpos'
 	 pp(possible_endpos)
+	 pp'possible_dow'
 	 pp(possible_dow)
-	 startingpos = possible_endpos
+	 -- startingpos = possible_endpos
 	 if dow_recurring[possible_dow] then
 	    i = i + 1
+	    
 	    if i == 1 then
 	       firstpos = possible_pos
 	    end
 	    lastpos = possible_endpos	    
-	    table.insert(retval_tbl, dow_recurring[possible_dow])
---	    table.insert(retval_num_tbl, dow_recurring[possible_dow])
-	 end      
+	    if except_pos and except_pos < startingpos then
+	       table.insert(tblDow_num_exceptions,dow_recurring[possible_dow])
+	    else
+	       table.insert(tblDow_nums, dow_recurring[possible_dow])
+	    end
+	    table.insert( tblDelete_pos_range , {possible_pos,possible_endpos})
+	    
+	 end
+	 
+	 startingpos = possible_endpos
       else
-	 dows_found = true
+	 break
       end
-   until dows_found == true
-   pp(retval_tbl)
-   if #retval_tbl > 0 then
-      table.sort(retval_tbl)
-      for _,k in ipairs(retval_tbl) do
+   until false
+   delete_pos_range()
+   
+   -- look for 3 letter abbreviated days of the week separated by commas, there must exist at least 2 abbreviated dows for this to work, unless proceeded by the word `every'.
+   pp('repeating search for dow, this time looking for commas')
+   startingpos = 1
+   i = 0
+
+   local first_iteration = true
+   local possible_endpos
+   local comma
+   repeat
+      
+      possible_pos,possible_endpos, possible_dow, comma = string.find(str,"([mtwtfss][ouehrau][neduitn])([, ]+)", startingpos)
+      
+      
+      if possible_dow then
+	 pp(possible_dow)
+	 startingpos = possible_endpos
+	 local found_dow =  dow_recurring_abbrv[possible_dow]
+	 
+	 if found_dow then
+	    comma = comma:gsub(' ','')
+	    local every_pos = str:find("every%s+"..possible_dow)
+	    if every_pos then 
+	       possible_pos = every_pos
+	    end
+	    local except_pos2 = str:find("except%s+"..possible_dow)
+	    if (i==0 and (every_pos or comma == ',' or except_pos2)) or i ~= 0 then
+				       
+	       pp('found')
+	       if except_pos and except_pos < startingpos then
+		  table.insert(tblDow_num_exceptions,dow_recurring_abbrv[possible_dow])
+	       else
+		  table.insert(tblDow_nums, dow_recurring_abbrv[possible_dow])
+	       end
+	       table.insert( tblDelete_pos_range , {possible_pos,possible_endpos})
+	       i = i + 1
+	       lastpos = possible_endpos
+	    end
+	 end
+      else
+	 break
+      end
+   until false
+   delete_pos_range() 
+   tblDow_nums = tblUniquify (tblDow_nums)
+   tblDow_num_exceptions = tblUniquify (tblDow_num_exceptions)  
+
+   local tblFinal_dow_nums = tblSet_difference (tblDow_nums, tblDow_num_exceptions)
+   
+   if except_pos then
+      str = str:sub(1,except_pos)..str:sub(except_pos_end,-1)
+   end
+   
+   local retval = ""
+   if #tblFinal_dow_nums ~= 0 then
+      for _,k in ipairs(tblFinal_dow_nums) do
 	 retval = retval .. "," .. dow_recurring_abbrv_reverse_lookup[k]
       end
       retval = retval:gsub("^,","")
-      local through_pos = str:find(" through ",firstpos)
-      local spanning_dow = false
-      if not through_pos or through_pos > lastpos then
-	 local dash_pos = str:find("-", firstpos)
-	 if dash_pos and dash_pos < lastpos then
-	    spanning_dow = true
-	 end
-      else
-	 spanning_dow = true
-      end
-      if spanning_dow == true then
-	 retval = ""
-	 for i = retval_tbl[1],retval_tbl[#retval_tbl] do
-	    retval = retval .. "," .. dow_recurring_abbrv_reverse_lookup[i]
-	 end
-	 retval = retval:gsub("^,","")
-      end
-      return str:sub(1,firstpos-1).." "..str:sub(lastpos+1),retval
-   else  -- repeat the above for abbreviated days of the week separated by commas, there must exist at least 1 comma for this to work
-      startingpos = 1
-      i = 0
-
-      dows_found = false
-      local acceptable_startpos
-      local possible_endpos
-      local first_iteration_of_loop = true
-      repeat
-	 possible_pos,possible_endpos, possible_dow = string.find(str,"[, ]([mtwtfss][ouehrau][neduitn])[, ]", startingpos)
-	 if possible_dow then
-	    pp(possible_dow)
-	    startingpos = possible_endpos
-	    if first_iteration_of_loop then
-	       first_iteration_of_loop = false
-	       if dow_recurring_abbrv[possible_dow] then
-		  table.insert(retval_tbl, dow_recurring_abbrv[possible_dow])
---		  table.insert(retval_num_tbl, dow_recurring[possible_dow])
-		  acceptable_startpos = possible_endpos
-		  i = i + 1
-		  if i == 1 then
-		     firstpos = possible_pos
-		     local every_pos = str:find("every%s+"..possible_dow)
-		     if every_pos then 
-			firstpos = every_pos
-		     end
-		  end
-		  lastpos = possible_endpos
-	       else
-		  dows_found = true
-	       end
-	    else   -- not first loop iteration --
-	       if dow_recurring_abbrv[possible_dow] and (possible_pos == acceptable_startpos or possible_pos == acceptable_startpos + 1 ) then
-		  table.insert(retval_tbl, dow_recurring_abbrv[possible_dow])
-		  acceptable_startpos = possible_endpos
-		  i = i + 1
-		  if i == 1 then
-		     firstpos = possible_pos
-		     local every_pos = str:find("every%s+"..possible_dow)
-		     if every_pos then 
-			firstpos = every_pos
-		     end
-		  end
-		  lastpos = possible_endpos		  
-	       else
-		  dows_found = true
-	       end
-	    end
-	 else
-	    dows_found = true
-	 end
-      until dows_found == true
-      if #retval_tbl >= 1 then
-	 for _,k in ipairs(retval_tbl) do
-	    retval = retval .. "," .. dow_recurring_abbrv_reverse_lookup[k]
-	 end
-	 retval = retval:gsub("^,","")
-	 return str:sub(1,firstpos-1).." "..str:sub(lastpos+1),retval
-
-      else
-	 return nil
-      end
+      return str,retval, prepend_to_cron_disposition
+      
+   else
+      return nil, nil, prepend_to_cron_disposition
    end
 end
+
+
 
 local function find_month(str)
    local possible_pos, possible_endpos, possible_month
@@ -1018,7 +1231,8 @@ local function str_is_greater_than_or_equal_to_p( str1, str2)
 end
 
 local function ccparse(raw_expr)
-    -- This function acts as a wrapper to ccronexpr.c, taken from
+    -- This function acts as a wrapper to ccronexpr.c, but doesnt seem
+    -- to work properly, taken from
     -- https://github.com/tarantool/cron-parser/blob/master/cron-parser.lua
     local parsed_expr = ffi.new("cron_expr[1]")
     local err = ffi.new("const char*[1]")
@@ -1559,6 +1773,7 @@ local function get_cron_jobs()
 
    
    local field1, field2, field3, field4, field5, field6, onhold_key, onhold_key2
+   local jobnum = 0
    local cron = {}
    cron.cron_all = {}
    cron.cronjobs = {}
@@ -1566,6 +1781,7 @@ local function get_cron_jobs()
    cron.cronjob_md5sumhexa_to_linenum = {}
    cron.cronjob_md5sumhexa_to_jobnum = {}
    cron.cronjob_md5sumhexa_to_cronline = {}  --debug
+   cron.cronjob_jobnum_to_linenum = {}
    cron.cronjob_schedules = {}
    cron.cronjob_dispositions = {}
    cron.cronjob_line_numbers = {}
@@ -1586,8 +1802,9 @@ local function get_cron_jobs()
    cron.blanklines_line_numbers = {}
    result = split(result, "\n")
 
-   local line_num = 1
+   local line_num
    for k,v in ipairs(result) do   
+      line_num = k
       if not v:match'^%s*(%S+)' then	
 	 table.insert( cron.blanklines,v)
 	 table.insert( cron.blanklines_line_numbers,k)
@@ -1604,17 +1821,23 @@ local function get_cron_jobs()
 	 if field6 then  
 	    pp("field6 = "..field6)
 	    if starts_with(field6,smart_device_client_program) then 
+	       
 	       table.insert(cron.cronjob_smart_device_client_cmds,v)
 	       table.insert(cron.cronjob_smart_device_client_cmds_line_numbers,line_num)
 	       table.insert(cron.cronjob_smart_device_client_cmds_cmd,field6:match(smart_device_client_program.."%s+(%S+)"))
 	    end
+	    jobnum = jobnum + 1
+	    table.insert(cron.cronjob_jobnum_to_linenum,k)
 	    table.insert( cron.cronjobs,v)
 
 	    table.insert( cron.cronjob_line_numbers, line_num)
 	    table.insert( cron.cronjob_schedules, field1.." "..field2.." "..field3.." "..field4.." "..field5)
 	    if field6:sub(-#tmp_token,-1) == tmp_token then
+	       local actual_line = v:sub(1,-#tmp_token-1)
+	       local md5sumhexa_val = md5.sumhexa( actual_line)
 	       table.insert( cron.cronjob_dispositions, field6:sub(1,-#tmp_token-1))
 	       table.insert( cron.cronjob_md5sumhexa, md5.sumhexa( v:sub(1,-#tmp_token-1)))
+	       cron.cronjob_md5sumhexa_to_linenum [md5.sumhexa( v:sub(1,-#tmp_token-1))] = line_num
 	       cron.cronjob_md5sumhexa_to_cronline[md5.sumhexa( v:sub(1,-#tmp_token-1))] = v:sub(1,-#tmp_token-1) 
 	       table.insert(cron.tmp_dispositions, field6:sub(1,-#tmp_token-1))
 	       table.insert(cron.tmp_schedules, field1.." "..field2.." "..field3.." "..field4.." "..field5)
@@ -1623,6 +1846,8 @@ local function get_cron_jobs()
 	    else
 	       table.insert( cron.cronjob_dispositions, field6)
 	       table.insert( cron.cronjob_md5sumhexa, md5.sumhexa(v))
+	       -- table.insert( cron.cronjob_schedules, field1.." "..field2.." "..field3.." "..field4.." "..field5) -- nm, ranged schedules cannot have an epoch
+	       cron.cronjob_md5sumhexa_to_linenum [ md5.sumhexa(v)] = line_num
 	       cron.cronjob_md5sumhexa_to_cronline[ md5.sumhexa(v)] = v
 	    end
 	 end
@@ -1650,6 +1875,8 @@ local function get_cron_jobs()
 	       table.insert(cron.tmp_schedules, field1.." "..field2.." "..field3.." "..field4.." "..field5)
 	       table.insert( cron.tmp_md5sumhexa, md5sum )
 	       table.insert(cron.tmp_line_numbers, line_num)
+	       -- cron.onholdjob_md5sumhexa_to_linenum [md5.sumhexa( v:sub(1,-#tmp_token-1))] = line_num
+	       -- cron.onholdjob_md5sumhexa_to_cronline[md5.sumhexa( v:sub(1,-#tmp_token-1))] = v:sub(1,-#tmp_token-1) 
 	       
 	    else                   -- just #ON HOLD#
 	       local md5sum = md5.sumhexa(v:sub(onhold_token_end+1,-1))
@@ -1661,11 +1888,7 @@ local function get_cron_jobs()
 	 end
 	 
       end
-      line_num = line_num + 1
-   end
-   for k,v in ipairs(cron.cronjob_md5sumhexa) do
-      cron.cronjob_md5sumhexa_to_linenum[v] = cron.cronjob_line_numbers[k]
-   end
+   end  -- end for
    cron.cronjob_md5sumhexa_to_jobnum = make_reverse_lookup_table(cron.cronjob_md5sumhexa)
    cron.onholdjob_md5sumhexa_reverselookup = make_reverse_lookup_table(cron.onholdjob_md5sumhexa)
    pp(ins(cron))
@@ -1679,7 +1902,7 @@ local function tblDeleteLine(t,d)
    end
    local new_table = {}
    for k,v in ipairs(t) do
-      if k ~= d then
+      if k ~= d then 
 	 table.insert(new_table,v)
       end
    end
@@ -1698,13 +1921,46 @@ local function tblDeleteLines(t,d)
       setd[l] = true
    end
    for k,v in ipairs(t) do
-      if not setd[k] then
+      if not setd[k] then 
 	 table.insert(new_table,v)
       end
    end
    return new_table
 end
 
+-- This function strips away all the lines out of an array, passed as
+-- first parameter, that consist of "", that are preceeded by more
+-- than n number of like lines.  The return value will be a table with
+-- the same content, but that will not have more than n consecutive
+-- blank lines anywhere in it.
+local function tblOnly_allow_n_consecutive_blank_lines( tblInput, n )
+   local stackLast_line = {}
+   local new_table = {}
+   n=n+1
+    
+   local function last_n_lines_of_tbl_are_not_blank_lines ( )
+      local stack_size = #stackLast_line
+      if stack_size < n then
+	 return true 
+      end
+      for i = 0, n - 1 do
+	 local strstack = stackLast_line[stack_size-i]
+	 if strstack ~= nil and strstack ~= "" then
+	    return true
+	 end
+      end
+      return false
+   end
+   
+   for k,v in ipairs( tblInput ) do
+      table.insert ( stackLast_line, v)
+      if last_n_lines_of_tbl_are_not_blank_lines( ) then
+	 table.insert( new_table, v)
+      end
+   end
+   return new_table
+end
+   
 local function array_to_multi_line_string_escaping_single_quotes(array)
    local multi_line_string = ""
    for _,line in ipairs(array) do
@@ -1747,6 +2003,7 @@ end
 local function submit_crontab(array)
    if isdir("/tmp") then
       array = tblRemove_duplicates_that_are_not_blank_or_comments(array)
+      array = tblOnly_allow_n_consecutive_blank_lines(array,2)
       pp("now writing crontab")
       print_current_datetime()
       pp(ins(array)) --debug
@@ -1888,14 +2145,19 @@ local function clear_schedule_for(md5sum_begin,md5sum_end)
 
 --debug   local parsed_schedule_begin = ccparse("0 "..cj.cronjob_schedules[jobnum])
 --   pp(ins(cj))
-      pp("md5sum_begin:")
+      pp"clearing schedule for md5sum_begin:"
       pp(md5sum_begin)
+      pp'md5sum_end:'
+      pp(md5sum_end)
+      pp'jobnum:' 
       pp(jobnum)
       pp(cj.cronjob_schedules[jobnum])
 --      local clear_begin = str_remove_newline_if_present(ccnext2(cj.cronjob_schedules[jobnum]))
       local clear_begin = schedule_to_epoch(cj.cronjob_schedules[jobnum])
 
 
+      pp'clear_begin epoch'
+      pp(clear_begin)
 
       local jobnum = cj.cronjob_md5sumhexa_to_jobnum[md5sum_end]
       if not jobnum then
@@ -1914,7 +2176,11 @@ local function clear_schedule_for(md5sum_begin,md5sum_end)
       local schedule_end = cj.cronjob_schedules[jobnum]
 --      local clear_end = str_remove_newline_if_present(ccnext2(schedule_end))
       local clear_end = schedule_to_epoch(schedule_end)
+      pp'clear_end epoch'
+      pp(clear_end)
       schedule_end = epoch_to_schedule(tonumber(clear_end)+60)
+      pp'schedule_end'
+      pp(schedule_end)
       local held = {}
       pp("check conflict range-")
       pp("clear_begin:")
@@ -1965,6 +2231,10 @@ end
 
 local function unhold_jobs_delete_jobs(unhold_str,delete_str)
    pp("calling unhold_jobs_delete_jobs")
+   pp'unhold:'
+   pp(unhold_str)
+   pp'delete:'
+   pp(delete_str)
    local cj = get_cron_jobs()
    for md5sum in unhold_str:gmatch("%w+") do
       unhold_job(cj, md5sum)
@@ -2189,18 +2459,22 @@ local function execute_last_cron_statement_regarding_device( devices_to_execute 
 end
 
 local function tbl_to_schedule_string (tbl)
+   if tbl.dow_recurring_written_out then
+      tbl.day = '*'
+      tbl.month = '*'
+   end
    if not tbl.hour then
       tbl.hour = 0
    end
    if not tbl.min then
       tbl.min = 0
    end
-   if not tbl.day then
-      tbl.day = "*"
-   end
-   if not tbl.month then
-      tbl.month = "*"
-   end
+   -- if not tbl.day then
+   --    tbl.day = "*"
+   -- end
+   -- if not tbl.month then
+   --    tbl.month = "*"
+   -- end
 
    local dow = tbl.dow_recurring_written_out
    if not dow then 
@@ -2253,19 +2527,30 @@ local function add_new_schedule(tbl_begin, disposition_begin, tbl_end, dispositi
    local new_cronline_begin_md5 = md5.sumhexa(new_cronline)
    pp("new_cronline_begin_md5=="..new_cronline_begin_md5)
    new_cronline = new_cronline.." #TMP"
+   if cj.cronjob_md5sumhexa[new_cronline_begin_md5] then
+      new_cronline = ""
+      print'cronline schedule already exists in crontab'
+   else
+      table.insert(cj.cron_all,new_cronline)
+   end
+   
    local new_cronline_end_md5
       
-   table.insert(cj.cron_all,new_cronline)
+   
    pp("adding new cronline: "..new_cronline)
    if tbl_end then
       local new_schedule_end = tbl_to_schedule_string(tbl_end)
-      local new_cronline = new_schedule_end.." "..disposition_end
+      new_cronline = new_schedule_end.." "..disposition_end
       new_cronline_end_md5 = md5.sumhexa(new_cronline)
-      new_cronline = new_cronline.." #TMP"
-      table.insert(cj.cron_all,new_cronline)
-      table.insert(cj.cron_all,new_schedule_begin.." "..smart_device_client_program.." clear schedule for "..new_cronline_begin_md5.." "..new_cronline_end_md5)
-      pp("also adding new cronline: "..new_cronline)
-      pp("also adding yet another croline: "..new_cronline_begin_md5.." "..new_cronline_end_md5)
+      if cj.cronjob_md5sumhexa[new_cronline_end_md5] then
+	 print'end schedule already exists in crontab'
+      else
+	 new_cronline = new_cronline.." #TMP"
+	 table.insert(cj.cron_all,new_cronline)
+	 table.insert(cj.cron_all,new_schedule_begin.." "..smart_device_client_program.." clear schedule for "..new_cronline_begin_md5.." "..new_cronline_end_md5)
+	 pp("also adding new cronline: "..new_cronline)
+	 pp("also adding yet another croline: "..new_cronline_begin_md5.." "..new_cronline_end_md5)
+      end
    end
 
    submit_crontab(cj.cron_all)
@@ -2423,6 +2708,8 @@ while 1 do
 	 local tmphandle = io.popen("crontab -l 2>" .. errormsg_file)
 	 local result = tmphandle:read("*a")
 	 tmphandle:close()
+	 print'requested: list'
+	 print_current_datetime()
 	 if not result then
 	    client:send("no results\n")	   
 	    --tmphandle = io.open(errormsg_file, "rb")
@@ -2438,6 +2725,41 @@ while 1 do
       -- elseif line == "turn on wifi" or line == "turn wifi on" or line == "enable wifi" then
       -- 	 --	os.execute(dispositions_cmdline["wifi"]["on"])
       -- 	 pp("enable wifi")
+      elseif starts_with(line,"md5") then
+	 local tmphandle = io.popen("crontab -l 2>" .. errormsg_file)
+	 local result = tmphandle:read("*a")
+	 tmphandle:close()
+	 print'requested: md5'
+	 print_current_datetime()
+	 if not result then
+	    client:send("no results\n")	   
+	    --tmphandle = io.open(errormsg_file, "rb")
+	    --result = tmphandle.lines
+	    for result in io.lines(errormsg_file) do 
+	       client:send(result .. "\n")	   
+	    end
+	 else	   
+	    client:send(result .. "\n")
+	    cjs = get_cron_jobs()
+	    client:send("---------- md5sum of each uncommented line: ------------------------\n")
+	    for k,v in ipairs(cjs.cronjob_md5sumhexa) do
+	       if (cjs.cronjob_md5sumhexa_to_cronline[v]) then
+		  client:send(cjs.cronjob_md5sumhexa_to_cronline[v] .. "\n")
+	       end
+	       if v then
+		  client:send(v .. "\n")
+	       end
+	    end
+	    client:send("---------- md5sum of held line item: ------------------------\n")
+	    local onholdjobs_list_size = #cjs.onholdjobs  
+	    for k,v in ipairs(cjs.onholdjobs) do
+	       client:send(v .. "\n")
+	       client:send(cjs.onholdjob_md5sumhexa[k] .. "\n")
+	       client:send("line number: "..cjs.onholdjob_line_numbers[k] .. "\n")
+	       
+	    end
+	    pp(ins(cjs))
+	 end
       elseif starts_with(line,"delete old") then
 	 delete_old_cron_jobs()
       elseif starts_with(line,"test") then
@@ -2445,8 +2767,25 @@ while 1 do
 	 client:send("hello there")
       elseif starts_with(line,"status") then
 	 local device = line:match("status (.*)%s?")
-	 client:send("status of "..device.."="..device_status(device).."\n")	 
 	 
+	 print'requested: status'
+	 print_current_datetime()
+	 local strStatus = device_status(device)
+	 if strStatus and device then
+	    client:send("status of "..device.."="..strStatus.."\n")	 
+	 end
+      elseif starts_with(line,"temp") or starts_with(line,"tmp") then
+	 
+	 -- temperature of tinker board s, but will also work for raspberry pi
+	 local tmphandle = io.popen("cat /sys/devices/virtual/thermal/thermal_zone0/type;cat /sys/devices/virtual/thermal/thermal_zone0/temp;cat /sys/devices/virtual/thermal/thermal_zone1/type;cat /sys/devices/virtual/thermal/thermal_zone1/temp;cat /sys/devices/virtual/thermal/cooling_device0/type;cat /sys/devices/virtual/thermal/cooling_device0/cur_state;cat /sys/devices/virtual/thermal/cooling_device1/type;cat /sys/devices/virtual/thermal/cooling_device1/cur_state\n")
+	 local result = tmphandle:read("*a")
+	 tmphandle:close()
+	 print'requested: temp'
+	 print_current_datetime()
+	 if result then
+
+	    client:send(result .. "\n")
+	 end
       elseif starts_with(line,"ver") then
 	 pp("smart_device_svr.lua version="..version)
 	 client:send("smart_device_svr.lua version="..version.."\n")	 
@@ -2455,11 +2794,16 @@ while 1 do
       elseif starts_with(line, "hold all") then
 	 hold_all_jobs()
       elseif starts_with(line, "clear") then  -- clear schedule for
+
+	 print'requested: clear'
+	 print_current_datetime()
 	 local md5sum_begin, md5sum_end = line:match("^clear schedule for %s*(%x+)%s*[, ]?%s*(%x+)%s*$")
 	 if md5sum_begin and md5sum_end then
 	    clear_schedule_for(md5sum_begin,md5sum_end)
 	 end
       elseif starts_with(line, "unhold") or starts_with(line, "delete") then
+	 print'requested: unhold'
+	 print_current_datetime()
 	 local unhold_str = line:match("unhold (.*) delete")
 	 if not unhold_str then
 	    unhold_str = line:match("unhold (.*)$")
@@ -2481,6 +2825,12 @@ while 1 do
 	 local action, device_in_question, device_number, disposition_state, disposition_state_num, temp_value_holder
 	 local month,day,year,hour,min,second,week,weekstart_day,day_of_the_year, military_time,dow_week
 	 local is_disposition_state
+	 local acknowledge = line 
+	 for _,v in ipairs(default_actions_list) do
+	    acknowledge = acknowledge:gsub(v,v.."ing")
+	 end
+	 acknowledge = acknowledge.."\n"
+	 client:send(acknowledge)
 	 for word in line:gmatch("%w+") do  -- first find device
 	    if is_device[word] == true then
 	       device_in_question = word
@@ -2543,8 +2893,10 @@ while 1 do
 	    
 	    pp("action = "..action)
 	    pp("disposition_state = "..disposition_state)
+	    local disposition_states_to_disposition_state_numbers = make_reverse_lookup_table(disposition_states[device_number])
+	    disposition_state_num = disposition_states_to_disposition_state_numbers[disposition_state]
 	    pp("disposition_state_num = "..disposition_state_num)
-	    pp("disposition = "..dispositions_cmdline[device_number][disposition_state_num])
+	    pp("disposition = "..dispositions_cmdline[device_number][disposition_state_num]);
 	
 	    pp("pos_original_predicate = "..pos_original_predicate)
 	    pp("pos_original_predicate_ends= "..pos_original_predicate_ends)
@@ -2562,9 +2914,14 @@ while 1 do
 	    line = trim(line)
 	    line = " "..line.." "
 	    
-	    local new_line,dow_recurring_string = extract_dow_recurring(line)
+	    local new_line,dow_recurring_string, prepend_to_cron_diposition = extract_dow_recurring(line)
 	    if new_line and new_line ~= "" then
 	       line = new_line
+	       date_in_question_tbl.dow_recurring_written_out = dow_recurring_string
+	       pp'new_line:'
+	       pp(new_line)
+	       pp'dow_recurring_string'
+	       pp(dow_recurring_string)
 	    end
 	    line = replace_for_the_next_clause(line)
 	    line = line:gsub("/","-")
@@ -2607,8 +2964,8 @@ while 1 do
 	    pp("date_in_question_tbl")
 	    pp(ins(date_in_question_tbl))
 	    
-	    if not (date_in_question_tbl.day and date_in_question_tbl.month and date_in_question_tbl.year) then
-	       pp("not date_in_question_tbl.day month and year in original line")
+	    if not (date_in_question_tbl.day and date_in_question_tbl.month ) then
+	       pp("not date_in_question_tbl.day month and day in original line")
 	       local dow_in_question = date_in_question_tbl.dow_written_out
 	       if dow_in_question then
 		  tmp_tbl = date_of_next_dow(dow_in_question)
@@ -2617,19 +2974,29 @@ while 1 do
 		  end
 		  date_in_question_tbl  = tmp_tbl
 	       elseif merge_stuff_following_keyword(date_in_question_by_duration_keywords[1], line, tmp_tbl, in_future_time_parser, os.date("*t")) then
+		  pp'has in_future_time_parser info:'
+		  pp(ins(tmp_tbl))
 		  tblShallow_fill_in_missing(date_in_question_tbl,tmp_tbl)
 	       else -- if all else fails in finding a date in question, then try to parse the line, minus any date_end_range parts, as the date_in_question
 		  pp("if all else fails try to parse the line, minus any date_end_range parts, as the date_in_question")
 		  local line_without_end_range_info = leave_out_date_range_ends_info(line)	       
 		  date_in_question_tbl = variant_date_parser(line_without_end_range_info) or date_in_question_tbl  
-		  if not (date_in_question_tbl.day and date_in_question_tbl.month and date_in_question_tbl.year) then
+		  if not (date_in_question_tbl.day and date_in_question_tbl.month ) then
 		     local dow_written_out  = find_dow(line_without_end_range_info)
 		     if dow_written_out then
+			pp'dow_written_out'
 			tmp_tbl = date_of_next_dow(dow_written_out)
 			for k,v in pairs(date_in_question_tbl) do
 			   tmp_tbl[k] = v
 			end
 			date_in_question_tbl  = tmp_tbl
+		     -- elseif date_in_question_tbl.dow_recurring_written_out then
+			elseif dow_recurring_string then
+			   -- this is not being called for some reason, so its also been placed in add_new_schedule()
+			pp'date_in_question_tbl.dow_recurring_written_out'
+			pp(date_in_question_tbl.dow_recurring_written_out)
+			date_in_question_tbl.month = '*'
+			date_in_question_tbl.day = '*'
 		     else 
 			-- assume today is the date in question, unless there is an 'in' keyword
 			pp("date assumed to be today")
@@ -2640,10 +3007,14 @@ while 1 do
 			now_tbl_day.year = now_tbl.year
 			tblShallow_fill_in_missing(now_tbl_day,date_in_question_tbl)
 			date_in_question_tbl = now_tbl_day
+			if not date_in_question_tbl.min and not date_in_question_tbl.hour then
+			   date_in_question_tbl.min = now_tbl.min
+			   date_in_question_tbl.hour = now_tbl.hour
+			end
 		     end
 		  end	    
 	       end   -- dow written out condition ends here --
-	    end  -- doesnt contain day month and year condition ends here --
+	    end  -- doesnt contain day month condition ends here --
 	    date_in_question_tbl.dow_recurring_written_out = dow_recurring_string
 	    pp("date_in_question_tbl")
 	    pp(date_in_question_tbl)
@@ -2702,17 +3073,18 @@ while 1 do
 		     tmp_tbl[k] = v
 		  end
 		  date_range_ends_tbl  = tmp_tbl
-	       elseif not (date_range_ends_tbl.day and date_range_ends_tbl.month and date_range_ends_tbl.year) then  -- assume end date maybe lies on same month day and/or year as date in question
+	       elseif not (date_range_ends_tbl.day and date_range_ends_tbl.month ) then  -- assume end date maybe lies on same month and day as date in question
 		  tblShallow_fill_in_missing(date_range_ends_tbl, date_in_question_tbl)
 		  
 	       end
 	       pp("final date_range_ends:")
 	       pp(ins(date_range_ends_tbl))
 	    end  -- is empty date_range_ends_tbl condition ends here --
-	    pp("dispositions_state_num")
-	    pp(dispositions_state_num)
-	    add_new_schedule(date_in_question_tbl,dispositions_cmdline[device_number][disposition_state_num], date_range_ends_tbl, dispositions_cmdline[device_number][(disposition_state_num - 1) % 1 + 1])
-	 end -- else no action ends here --
+	    pp("disposition_state_num")
+	    pp(disposition_state_num)
+	    local end_disposition_state_num = 2 - (disposition_state_num + 1 ) % 2
+	    add_new_schedule(date_in_question_tbl,dispositions_cmdline[device_number][disposition_state_num], date_range_ends_tbl, dispositions_cmdline[device_number][end_disposition_state_num])
+	 end -- else not action ends here --
       end  -- else variant command ends here --
    end  -- else not err ends here --
    pp(ins(keywords_used_array))

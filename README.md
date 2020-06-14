@@ -10,12 +10,22 @@ controls network devices using cron
        terminal, or from the send_to_smart_device_svr.lua client.
        Recognized commands include: 
           0
+	  
 	  1
+
 	  turn off wifi
- 	  in 30 minutes turn wifi on for 2 hours and 30 minutes
+
+	  in 30 minutes turn wifi on for 2 hours and 30 minutes
+
 	  on 2009-11-05 disable wifi for 30 minutes at 3:00 pm
- 	  on mon,tue,wed turn on wifi for 5 hours at 3:00pm
-	  and variations on these themes.
+
+	  on mon,tue,wed turn on wifi for 5 hours at 3:00pm
+
+	  status wifi
+
+	  at midnight on fridays reboot wifi
+	  
+	  ... and variations on these themes.
 
      When using telnet, the user is only allowed 30 seconds to type
        in a command.  In the case of a two part non-recurring on and
@@ -64,9 +74,9 @@ controls network devices using cron
           ccronexpr.c is from https://github.com/staticlibs/ccronexpr
 
           The lua wrapper to ccronexpr.c is from
-          https://github.com/tarantool/cron-parser/blob/master/cron-parser.lua with some debugging
+          https://github.com/tarantool/cron-parser/blob/master/cron-parser.lua but is not currently used
 
-          table.save-1.0.lua is from http://lua-users.org/wiki/SaveTableToFile
+          table.save-1.0.lua is from http://lua-users.org/wiki/SaveTableToFile but is not currently used
 
           md5.lua is from https://github.com/kikito/md5.lua/blob/master/md5.lua
 
