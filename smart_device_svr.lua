@@ -69,14 +69,14 @@
           LuaJIT-2.0.5 is from http://luajit.org/download.html
 
      Authors/Maintainers: ciscorx@gmail.com
-       Version: 0.7
-       Commit date: 2020-06-14
+       Version: 0.8
+       Commit date: 2020-06-19
 
-       7z-revisions.el_rev=1073.0
-       7z-revisions.el_sha1-of-last-revision=779045f3b425af2cdc4a60f04346a768d505e4a3
+       7z-revisions.el_rev=1074.0
+       7z-revisions.el_sha1-of-last-revision=3193ed6ab3d188de7666315fa437f6af3ee11f5a
 --]]
 
-local version = "0.7"
+local version = "0.8"
 local devices_list = {"wifi", "svr"}
 local scripts_dir = io.popen"pwd":read'*l'
 local dispositions_cmdline = {{"screen -dm emacs -nw -Q -l "..scripts_dir.."/disable_wifi.el","screen -dm emacs -nw -Q -l "..scripts_dir.."/enable_wifi.el","screen -dm emacs -nw -Q -l "..scripts_dir.."/reboot_wifi.el"},{"sudo shutdown -h now",nil,"sudo reboot"}}
@@ -676,7 +676,7 @@ end
 -- This function takes a list of lines and returns its contents in a
 -- new list, sorted and after having removed all extra occurrences of
 -- each line within the list.
-function tblUniquify (tblInput)
+local function tblUniquify (tblInput)
    local tblInputCopy = tblShallow_copy(tblInput)
    local tblNew = {}
    local last_line
@@ -701,7 +701,8 @@ end
 -- single 3 letter dow reference could simply be referring to a
 -- particular day of the week, this week, and not to a recurring
 -- event.
-function extract_dow_recurring(str)
+local function extract_dow_recurring(str)
+   
    local possible_pos, possible_endpos,possible_dow
    local possible_dow2
    local firstpos, lastpos
@@ -715,6 +716,9 @@ function extract_dow_recurring(str)
    local tblDelete_pos_range = {}
    local i = 0
    str = " " .. str .. " "
+   if str:match(' this ') or str:match(' next ') then
+      return
+   end
    local function parse_spanning ()
       local dow_num = dow_recurring_abbrv[possible_dow] 
       local j
@@ -2992,7 +2996,7 @@ while 1 do
 			date_in_question_tbl  = tmp_tbl
 		     -- elseif date_in_question_tbl.dow_recurring_written_out then
 			elseif dow_recurring_string then
-			   -- this is not being called for some reason, so its also been placed in add_new_schedule()
+			   -- this is not being called for some reason, so its also been placed in tbl_to_schedule_string() 
 			pp'date_in_question_tbl.dow_recurring_written_out'
 			pp(date_in_question_tbl.dow_recurring_written_out)
 			date_in_question_tbl.month = '*'
