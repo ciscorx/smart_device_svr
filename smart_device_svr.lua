@@ -77,11 +77,11 @@
           LuaJIT-2.0.5 is from http://luajit.org/download.html
 
      Authors/Maintainers: ciscorx@gmail.com
-       Version: 0.9
-       Commit date: 2020-06-30
+       Version: 1.0
+       Commit date: 2020-07-12
 
-       7z-revisions.el_rev=1077.0
-       7z-revisions.el_sha1-of-last-revision=cd14467f53c4bc4c24378958270cd15357a2aeb3
+       7z-revisions.el_rev=1078.0
+       7z-revisions.el_sha1-of-last-revision=74edd92d51101aad1b1151a646e5b9745d47c7fa
 --]]
 
 -------- GLOBAL VARIABLES ---------------
@@ -186,7 +186,7 @@ local dispositions_cmdline = {
 }
 
 local named_constants = {
-   ['version']="0.9",
+   ['version']="1.0",
    ['port_number_for_which_to_listen']=29998,
    ['time_zoneinfo'] = { z=0,ut=0,gmt=0,pst=-8*3600,pdt=-7*3600
 			 ,mst=-7*3600,mdt=-6*3600
@@ -201,6 +201,8 @@ local named_constants = {
    ['disposition_states'] = {{"off","on","reboot"},{"off","on","reboot"}},
    ['device_ip_addresses'] = { wifi="192.168.1.254", svr="localhost"},
    ['device_status_query_texts'] = { wifi={ '','>','<', "2.4 GHz Radio Status","Network name","Status","span class"}},
+   ['device_tx_data_usage_query_text'] = {wifi={ '/xslt?PAGE=C_2_5#wifi','>','<', "Detailed Wi-Fi AP statistics","Transmit","<td>"}},
+   ['device_rx_data_usage_query_text'] = {wifi={ '/xslt?PAGE=C_2_5#wifi','>','<', "Detailed Wi-Fi AP statistics","Receive","<td>"}},
    ['devices_for_which_to_execute_last_cron_statement_on_boot'] = {},
    ['months'] = {jan=1,feb=2,mar=3,apr=4,may=5,jun=6,jul=7,aug=8,sep=9,oct=10,nov=11,dec=12},
    ['dow'] = {su=0,mo=1,tu=2,we=3,th=4,fr=5,sa=6},
@@ -251,6 +253,14 @@ local function split(inputstr, sep)
    end
 end
 
+local function escape_pattern(text)
+   pp("escaping the following text:")
+   pp(text)
+   if not text then return "" end
+   pp( text:gsub("([^%w])", "%%%1"))
+
+   return text:gsub("([^%w])", "%%%1")
+end
 
 local function sleep(sec)
     socket.select(nil, nil, sec)
@@ -351,6 +361,8 @@ end
 
 local is_action = Set(named_constants.default_actions_list)
 local is_device = Set(named_constants.devices_list)
+pp'is_device'
+pp(is_device)
 local prepositions_list = {"in","for", "until", "from", "to", "til"}
 local date_specifiers_list = {"until", "til"}				
 local prepositions_pos_index = {}
@@ -945,22 +957,7 @@ local function extract_dow_recurring(str)
    until false 
    delete_pos_range() 
    
-   
-
-   -- -- look for spanning via `through'
-   -- startingpos = 1
-   -- repeat
-   --    possible_pos, possible_endpos,possible_dow,  possible_dow2 = string.find(str,"([mtwtfss][ouehrau][neduitn])%s*through%s*([mtwtfss][ouehrau][neduitn])", startingpos)
-   --    if possible_dow then
-   -- 	 parse_spanning()
-   -- 	 startingpos=possible_endpos
-   --    else
-   -- 	 break
-   --    end
-   -- until false
-   -- delete_pos_range()
-
-   -- look for `through' delineated spanning of un-abbreviated dow
+   -- look for `through' delineated spanning of dow
    startingpos = 1
    repeat
   --    possible_pos, possible_endpos,possible_dow,  possible_dow2 = string.find(str,"([mtwtfss][ouehrau][neduitn][dsnrdud][adesara][yasdydy]%l*)%s*through%s*([mtwtfss][ouehrau][neduitn][dsnrdud][adesara][yasdydy]%l*)", startingpos)
@@ -2030,7 +2027,6 @@ end
 --  onhold_token tmp_token, respectively.
 local function get_cron_jobs()
    local tmphandle = io.popen("crontab -l 2>" .. named_constants.errormsg_file)
---debug   local tmphandle = io.popen("cat crontable") --debug
    local result = tmphandle:read("*a")
    if not result then
       return nil
@@ -2046,7 +2042,7 @@ local function get_cron_jobs()
    cron.cronjob_md5sumhexa = {}
    cron.cronjob_md5sumhexa_to_linenum = {}
    cron.cronjob_md5sumhexa_to_jobnum = {}
-   cron.cronjob_md5sumhexa_to_cronline = {}  --debug
+   cron.cronjob_md5sumhexa_to_cronline = {}  
    cron.cronjob_jobnum_to_linenum = {}
    cron.cronjob_schedules = {}
    cron.cronjob_dispositions = {}
@@ -2086,11 +2082,11 @@ local function get_cron_jobs()
 
 	 if field6 then  
 	    pp("field6 = "..field6)
-	    if starts_with(field6,named_constants.smart_device_client_program) then 
+	    if starts_with(field6,escape_pattern(named_constants.smart_device_client_program)) then 
 	       
 	       table.insert(cron.cronjob_smart_device_client_cmds,v)
 	       table.insert(cron.cronjob_smart_device_client_cmds_line_numbers,line_num)
-	       table.insert(cron.cronjob_smart_device_client_cmds_cmd,field6:match(named_constants.smart_device_client_program.."%s+(%S+)"))
+	       table.insert(cron.cronjob_smart_device_client_cmds_cmd,field6:match(escape_pattern(named_constants.smart_device_client_program).."%s+(%S+)"))
 	    end
 	    jobnum = jobnum + 1
 	    table.insert(cron.cronjob_jobnum_to_linenum,k)
@@ -2267,7 +2263,7 @@ local function EVALUATESsubmit_crontab(tblCron)
    pp'newcron_cmd_part3'
    pp(newcron_cmd_part3)
    pp'newcron_cmd:'
-   pp(ins(newcron_cmd)) --debug
+   pp(ins(newcron_cmd)) 
   
    os.execute(newcron_cmd)      
 
@@ -2289,7 +2285,7 @@ local function DOESNTWORKsubmit_crontab(tblCron)
    pp'newcron_cmd_part3'
    pp(newcron_cmd_part3)
    pp'newcron_cmd:'
-   pp(ins(newcron_cmd)) --debug
+   pp(ins(newcron_cmd)) 
   
    os.execute(newcron_cmd)      
 
@@ -2304,10 +2300,9 @@ local function submit_crontab(array)
       array = tblOnly_allow_n_consecutive_blank_lines(array,2)
       pp("now writing crontab")
       print_current_datetime()
-      pp(ins(array)) --debug
+      pp(ins(array)) 
       local tmpfilename = randomString(10)
       local fileh = assert(io.open("/tmp/"..tmpfilename,"w"))
---debug            local fileh = io.open("/tmp/crontable","w") --debug
       for _,v in ipairs(array) do
 	 fileh:write(v)
 	 fileh:write("\n")
@@ -2390,6 +2385,7 @@ local function epoch_to_schedule(epoch)
    return tbl.min.." "..tbl.hour.." ".. tbl.day.." ".. tbl.month.." *"
 end
 
+   
 -- Converts a line from a crontab to epoch time, which is seconds elapsed since Jan 1st 1970.
 local function schedule_to_epoch(schedule)
    local tbl = {}
@@ -2440,7 +2436,6 @@ local function clear_schedule_for(md5sum_begin,md5sum_end)
       local disposition_begin = cj.cronjob_dispositions[jobnum]
       local disposition_action_begin = dispositions_to_action[disposition_begin]
       local device_begin = dispositions_to_device[disposition_begin]
-
 --debug   local parsed_schedule_begin = ccparse("0 "..cj.cronjob_schedules[jobnum])
 --   pp(ins(cj))
       pp"clearing schedule for md5sum_begin:"
@@ -2556,6 +2551,8 @@ local function unhold_jobs_delete_jobs(unhold_str,delete_str)
       pp("deleting line_num_of_unhold_delete:")
       pp(line_num_of_unhold_delete)
       table.insert(jobs_to_delete_linenums, line_num_of_unhold_delete)
+   else
+      pp'no line_num_of_unhold_delete'
    end
    cj.cron_all = tblDeleteLines(cj.cron_all,jobs_to_delete_linenums)
    submit_crontab(cj.cron_all)   
@@ -2772,6 +2769,11 @@ local function tbl_is_now_p(tbl)
    end
 end
 
+local function tbl_minus_n_minutes(tbl,n)
+   local epoc =  os.time(tbl) - 60 * n
+   return os.date("*t",epoc)
+end
+
 -- The mechanism of add_new_schedule() is as follows: when a new
 -- schedule is added that does not involve turning a device both on
 -- and off, then it is simply added to the crontab.  If it does
@@ -2822,8 +2824,16 @@ local function add_new_schedule(tbl_begin, disposition_begin, tbl_end, dispositi
 	    pp("also adding new cronline: "..new_cronline)
 	 if tbl_begin.dow_recurring_written_out then
 	    print'But, not clearing schedules for recurring events.'
-	 else
-	    table.insert(cj.cron_all,new_schedule_begin.." "..named_constants.smart_device_client_program.." clear schedule for "..new_cronline_begin_md5.." "..new_cronline_end_md5)
+	 elseif not tbl_is_now_p(tbl_begin)  then
+	    local minutes_before_schedule_to_clear = 1
+	    local clear_tbl
+	    if  os.time(tbl_begin) - os.time() <= minutes_before_schedule_to_clear*60 then
+	       clear_tbl = tbl_begin 
+	    else
+	       clear_tbl = tbl_minus_n_minutes(tbl_begin,minutes_before_schedule_to_clear)
+	    end
+	    local clear_schedule_begin = tbl_to_schedule_string(clear_tbl)
+	    table.insert(cj.cron_all,clear_schedule_begin.." "..named_constants.smart_device_client_program.." clear schedule for "..new_cronline_begin_md5.." "..new_cronline_end_md5)
 	    
 	    pp("also adding yet another croline: "..new_cronline_begin_md5.." "..new_cronline_end_md5)
 	 end
@@ -2844,14 +2854,7 @@ local function flag_error(msg,client)
    client:send(msg)
 end
 
-local function escape_pattern(text)
-   pp("escaping the following text:")
-   pp(text)
-   if not text then return "" end
-   pp( text:gsub("([^%w])", "%%%1"))
 
-   return text:gsub("([^%w])", "%%%1")
-end
 
 -- Say you wanna search a small html file for a particular string,
 -- which happens to recur ubiquitously in the file, like for example
@@ -2952,6 +2955,28 @@ local function run_shell_command_and_send_to_client( cmd, msg )
       client:send(msg..result)
       pp(msg..result)
    end
+end
+local function read_html_page_to_tbl ( html_address )
+   
+   local f = io.popen("curl "..html_address)
+   pp("curl "..html_address)
+   local tblFiletext ={}
+   for str in f:lines() do
+      table.insert(tblFiletext,str)
+      pp(str)
+   end
+   f:close()
+   return tblFiletext
+end
+
+local function pole_device_shutdown( queryline )
+   local dev, last_tx_bytes, last_rx_bytes, threshold_tx_bytes, threshold_rx_byteas = queryline:match("pole%s+(%S+)%s+(%d+)%s+(%d+)%s+threshold%s+(%d+)%s+(%d+)")
+   if not dev or not last_bytes or not threshold then
+      return nil
+   end
+   local html_page = read_html_page_to_tbl (named_constants.device_ip_addresses[device]..named_constants.device_tx_data_usage_query_texts[device][1]) 
+   local current_tx = tblContext_line_succession_search(tblFiletext, unpack(named_constants.device_tx_data_usage_query_text[device_name]))
+   local current_rx = tblContext_line_succession_search(tblFiletext, unpack(named_constants.device_rx_data_usage_query_text[device_name]))
 end
 
 			   
@@ -3054,6 +3079,10 @@ while 1 do
 	    end
 	    pp(ins(cjs))
 	 end
+	 -- pole
+      elseif starts_with(line,"pole%s+%S+%s+%d+%s+%d+%s+threshold%s+%d+%s+%d+") then
+	 command_history_stack:pop(named_constants.command_history_stack_frame_size)
+         pole_device_shutdown(line)
       elseif starts_with(line,"delete old") then
 	 delete_old_cron_jobs()
       elseif starts_with(line,"test") then
@@ -3179,15 +3208,17 @@ while 1 do
 	 line=" "..line
 	 line=line:gsub(" keep "," turn ")
 	 line=line:gsub(" more "," ")
-	 for word in line:gmatch("%w+") do  -- first find device
-	    if is_device[word] == true then
-	       device_in_question = word
-	       device_number = device_in_question_to_device_number[word]
+	 for _,device_listed in ipairs(named_constants.devices_list) do
+	    if line:match(escape_pattern(device_listed)) then
+	       device_in_question = device_listed
+	       device_number = device_in_question_to_device_number[device_listed]
 	       break
 	    end
 	 end
+	 
 	 if not device_in_question then  -- no device was specified so assume first device, now find action and disposition state number
 	    no_device_was_specified = true
+	    pp'no_device_was_specified = true'
 	    device_in_question = named_constants.devices_list[1]
 	    device_number = 1
 	    for word in line:gmatch("%w+") do
@@ -3205,6 +3236,9 @@ while 1 do
 	 else  -- device_in_question was specified, now find action
 
  
+	    pp'device_number'
+	    pp(device_number)
+
 	    local disposition_states_to_disposition_state_numbers = make_reverse_lookup_table(named_constants.disposition_states[device_number])
 	    local possible_pos_original_predicate, possible_pos_original_predicate_ends, possible_disposition_state1, possible_disposition_state2 = line:find("(%w+)%s+"..device_in_question.."%s*(%w*)")
 	    is_disposition_state = Set(named_constants.disposition_states[device_number])
@@ -3240,6 +3274,9 @@ while 1 do
 	    flag_error("error: an action must be specified, such as turn on, turn off, enable, or disable.\n",client)
 	 else
 	    
+	    if action == 'reboot' then
+	       disposition_state = 'reboot'
+	    end
 	    pp("action = "..action)
 	    pp("disposition_state = "..disposition_state)
 	    local disposition_states_to_disposition_state_numbers = make_reverse_lookup_table(named_constants.disposition_states[device_number])
@@ -3254,16 +3291,18 @@ while 1 do
 	    pp("disposition_state_num = "..disposition_state_num)
 	    pp("disposition = "..dispositions_cmdline[device_number][disposition_state_num]);
 	
-	    pp("pos_original_predicate = "..pos_original_predicate)
-	    pp("pos_original_predicate_ends= "..pos_original_predicate_ends)
+	    if pos_original_predicate then pp("pos_original_predicate = "..pos_original_predicate) end
+	    if pos_original_predicate_ends then pp("pos_original_predicate_ends= "..pos_original_predicate_ends) end
 	    pp("line: "..line)
 	    pp("removing from line: "..line:sub(pos_original_predicate,pos_original_predicate_ends))
-	    if pos_original_predicate == 1 then
-	       line = line:sub(pos_original_predicate_ends+1,-1)
-	    elseif pos_original_predicate_ends == #line then
-	       line = line:sub(1,pos_original_predicate-1)
-	    else
-	       line = line:sub(1,pos_original_predicate-1)..line:sub(pos_original_predicate_ends+1,-1)
+	    if pos_original_predicate and pos_original_predicate_ends then
+	       if pos_original_predicate == 1 then
+		  line = line:sub(pos_original_predicate_ends+1,-1)
+	       elseif pos_original_predicate_ends == #line then
+		  line = line:sub(1,pos_original_predicate-1)
+	       else
+		  line = line:sub(1,pos_original_predicate-1)..line:sub(pos_original_predicate_ends+1,-1)
+	       end
 	    end
 		    
 	    line = line:gsub("%s+"," ")  -- remove_extra_spaces(line)
@@ -3381,9 +3420,9 @@ while 1 do
 	    do
 	       local now_is = os.date("*t")	       
 	       if date_in_question_tbl.min == now_is.min and date_in_question_tbl.hour == now_is.hour and date_in_question_tbl.day == now_is.day and date_in_question_tbl.month == now_is.month then  -- EXECUTE NOW
-		  pp("now invoking: turning wifi "..disposition_state_num)
+		  pp("right now invoking: turning wifi "..disposition_state_num)
 		  pp("os.execute("..dispositions_cmdline[device_number][disposition_state_num]..")")
---debug	  os.execute(dispositions_cmdline[device_number][disposition_state_num])
+		 os.execute(dispositions_cmdline[device_number][disposition_state_num])
 	       end
 	    end
 	    

@@ -21,7 +21,13 @@ controls network devices using cron
 
 	  on mon,tue,wed turn on wifi for 5 hours at 3:00pm
 
+	  mon - fri turn on wifi 3pm
+
+          turn on wifi every day except thu from 3 to 5pm
+
 	  status wifi
+
+          temp
 
 	  at midnight on fridays reboot wifi
 	  
@@ -65,10 +71,10 @@ controls network devices using cron
 
           This is the crontab I've been using ( set with crontab -e, notice that there are no seconds fields ):
 
-            59 22 * * sun,mon,tue,wed,thu screen -dm emacs -nw -Q -l /home/pi/scripts/disable_wifi.el
-            0 15 * * mon,tue,wed,thu,fri screen -dm emacs -nw -Q -l /home/pi/scripts/enable_wifi.el
-            59 23 * * fri,sat screen -dm emacs -nw -Q -l /home/pi/scripts/disable_wifi.el
-            0 7 * * sat,sun screen -dm emacs -nw -Q -l /home/pi/scripts/enable_wifi.el
+            59 22 * * sun,mon,tue,wed,thu screen -dm emacs -nw -Q -l /home/pi/code/smart_device_svr/disable_wifi.el
+            0 15 * * mon,tue,wed,thu,fri screen -dm emacs -nw -Q -l /home/pi/code/smart_device_svr/enable_wifi.el
+            59 23 * * fri,sat screen -dm emacs -nw -Q -l /home/pi/code/smart_device_svr/disable_wifi.el
+            0 7 * * sat,sun screen -dm emacs -nw -Q -l /home/pi/code/smart_device_svr/enable_wifi.el
    
 ## References:  
           ccronexpr.c is from https://github.com/staticlibs/ccronexpr
