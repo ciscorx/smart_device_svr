@@ -57,10 +57,10 @@ controls network devices using cron
           ccronexpr_misc_utils.so is compiled by the following:
              gcc -o ccronexpr_misc_utils.so ccronexpr_misc_utils.c -shared -fPIC
    
-          luajit and luasocket must be compiled, in their respective directories, with:
-             make && make install 
+          luajit and luasocket must be compiled, in their respective directories, using the command: make && make install
+	  For arm64, you'll need to instead delete the enclosed luaJit folder and download the latest luajit source using the command: git clone http://github.com/luajit/luajit.git
 
-          luasocket must have in its src directory a copy of lua.h luaconf.h and luaxlib.h pertaining to lua-5.1, which have already been provided.
+          luasocket must have, in its src directory, a copy of lua.h luaconf.h and luaxlib.h, pertaining to lua-5.1, which have already been provided.
 
           The following scripts are copied to /usr/bin:
              send_to_smart_device_svr.lua  
