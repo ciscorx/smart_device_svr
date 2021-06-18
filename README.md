@@ -10,27 +10,16 @@ controls network devices using cron
        terminal, or from the send_to_smart_device_svr.lua client.
        Recognized commands include: 
           0
-	  
 	  1
-
 	  turn off wifi
-
 	  in 30 minutes turn wifi on for 2 hours and 30 minutes
-
 	  on 2009-11-05 disable wifi for 30 minutes at 3:00 pm
-
 	  on mon,tue,wed turn on wifi for 5 hours at 3:00pm
-
 	  mon - fri turn on wifi 3pm
-
           turn on wifi every day except thu from 3 to 5pm
-
 	  status wifi
-
           temp
-
 	  at midnight on fridays reboot wifi
-	  
 	  ... and variations on these themes.
 
      When using telnet, the user is only allowed 30 seconds to type
@@ -59,6 +48,7 @@ controls network devices using cron
    
           luajit and luasocket must be compiled, in their respective directories, using the command: make && make install
 	  For arm64, you'll need to instead delete the enclosed luaJit folder and download the latest luajit source using the command: git clone http://github.com/luajit/luajit.git
+	  (LuaJIT is not dead!  Mike Pall is evidently still very much kicking ass!)
 
           luasocket must have, in its src directory, a copy of lua.h luaconf.h and luaxlib.h, pertaining to lua-5.1, which have already been provided.
 
